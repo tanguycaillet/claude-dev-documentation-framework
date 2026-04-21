@@ -67,3 +67,38 @@ This requires:
 - Settings form: add timezone selector (dropdown of IANA names); validate on server before writing to DB
 - Backfill script (one-time): `UPDATE users SET timezone = 'UTC' WHERE timezone IS NULL` — runs as part of migration
 - Test `test_req_0003_timezone.ts`: seed user with `timezone = 'Asia/Tokyo'`, finish book at 23:15 local on March 31, assert chart shows book in March, not April
+
+### Code-level traceability
+
+Inline markers to add at definition sites:
+
+```sql
+-- migrations/0042_update_monthly_stats_view.sql
+-- ADR-0012 ← SCN-0007: bucket by user's local timezone, not UTC.
+-- Storing finished_at as UTC remains correct — only the aggregation needs conversion.
+CREATE OR REPLACE VIEW monthly_reading_stats AS
+SELECT
+  u.id AS user_id,
+  DATE_TRUNC('month', b.finished_at AT TIME ZONE u.timezone) AS month,
+  SUM(b.page_count) AS pages
+FROM books b JOIN users u ON u.id = b.user_id
+GROUP BY 1, 2;
+```
+
+```typescript
+// src/components/Settings/TimezoneSelect.tsx
+// ADR-0012: timezone is load-bearing for the stats view — validate IANA names server-side.
+export function TimezoneSelect() { ... }
+```
+
+Expected commits (one per ADR):
+
+```
+fix(stats): bucket monthly stats in user timezone [ADR-0012 ← SCN-0007]
+
+Resolves SCN-0007 where users near date boundaries saw books in the
+wrong month. Adds users.timezone column, rewrites monthly_reading_stats
+view to convert before DATE_TRUNC, and adds a timezone selector to
+settings.
+```
+

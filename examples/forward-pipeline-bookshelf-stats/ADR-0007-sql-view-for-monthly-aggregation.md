@@ -44,3 +44,28 @@ Create a SQL view (`monthly_reading_stats`) that pre-aggregates page totals grou
 - Create migration `0043_add_books_monthly_stats_trigger.sql` with `AFTER INSERT OR UPDATE OR DELETE` trigger
 - Add `GET /stats/monthly?year=<YYYY>` endpoint returning `[{ month: "2026-01", pages: 312 }, ...]`
 - Integration test: seed three books in different months, delete one, verify view reflects deletion within the same transaction
+
+### Code-level traceability
+
+Inline markers to add at definition sites:
+
+```sql
+-- migrations/0042_add_monthly_reading_stats_view.sql
+-- ADR-0007: monthly aggregation lives in a SQL view, not the API layer.
+CREATE VIEW monthly_reading_stats AS ...
+```
+
+```typescript
+// src/api/stats.ts
+// ADR-0007: view-backed; see docs/decisions/ADR-0007-sql-view-for-monthly-aggregation.md
+export async function getMonthlyStats(userId: string, year: number) { ... }
+```
+
+Expected commits (one per ADR, chronologically):
+
+```
+feat(stats): add monthly_reading_stats SQL view + trigger [ADR-0007]
+feat(stats): expose /stats/monthly endpoint [ADR-0007]
+test(stats): verify view freshness across insert/update/delete [ADR-0007]
+```
+

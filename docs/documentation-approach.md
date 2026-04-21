@@ -589,6 +589,161 @@ Six months later, someone asks "why do we use a SQL view instead of computing st
 
 ---
 
+## Code-Level Traceability
+
+The pipelines above get you from a user need to a task, but the chain breaks once a developer (or AI assistant) starts writing code. A reader staring at a specific line has no direct way back to the decision that shaped it. Two lightweight conventions fix that: **inline ADR markers** in source code, and **one-ADR-per-commit** discipline in git history.
+
+Together these make the chain navigable from any direction: from TASKS.md up to the REQ, from a git commit to the ADR, from a line of code to the reasoning that justifies it.
+
+### Inline ADR markers in source code
+
+When code embodies a non-obvious trade-off captured in an ADR, mark it with a comment referencing the ADR ID. The test is simple: **if a future reader might look at this code and think "why don't we just do X?", add the marker.** The marker tells them exactly where to find the answer.
+
+```python
+# Python
+# ADR-0007: monthly aggregation lives in a SQL view, not the API layer.
+# See docs/decisions/ADR-0007-sql-view-for-monthly-aggregation.md for alternatives.
+def get_monthly_stats(user_id: str, year: int) -> list[MonthlyStat]:
+    ...
+```
+
+```typescript
+// TypeScript
+// ADR-0008: Chart.js with tree-shaken imports over Recharts/D3.
+// See docs/decisions/ADR-0008-chart-library-choice.md for bundle-size rationale.
+import { Bar } from 'react-chartjs-2';
+import { Chart, BarElement, CategoryScale, LinearScale, Tooltip } from 'chart.js';
+Chart.register(BarElement, CategoryScale, LinearScale, Tooltip);
+```
+
+```sql
+-- SQL
+-- ADR-0012: buckets month AFTER converting to user timezone.
+-- See docs/decisions/ADR-0012-timezone-aware-month-buckets.md and SCN-0007.
+CREATE VIEW monthly_reading_stats AS
+SELECT
+  u.id AS user_id,
+  DATE_TRUNC('month', b.finished_at AT TIME ZONE u.timezone) AS month,
+  SUM(b.page_count) AS pages
+FROM books b JOIN users u ON u.id = b.user_id
+GROUP BY 1, 2;
+```
+
+**When to add markers:**
+
+- At the definition of any function, class, module, or config value whose *design* is driven by an ADR
+- At any block of code that implements a safety rule, a non-obvious optimisation, or a deliberate limitation
+- At config files where a value choice comes from an ADR (e.g., `KELLY_FRACTION = 0.25  # ADR-0005`)
+- At test files — a single top-of-file comment is enough: `// Tests for REQ-0003. See ADR-0007, ADR-0008.`
+
+**When NOT to add markers:**
+
+- Trivial code (getters, string formatting, obvious helpers) — markers would be noise
+- Code that's one of many identical instances of a pattern (mark the pattern's canonical location, not every use)
+- Internal implementation details that aren't themselves decisions
+
+**Format:**
+
+- Always use the full ID: `ADR-0007`, not `ADR 7` or `adr-7`. This makes grep/ripgrep searches reliable.
+- Prefer one-line markers. If you need more than two lines to explain, the ADR itself isn't doing its job — fix that instead.
+- For code that implements multiple ADRs, list them: `// ADR-0007, ADR-0012`.
+- It's fine to also mark REQ or SCN when relevant: `// ADR-0012 ← SCN-0007: fix for timezone-bucketing bug`.
+
+**Grep-ability is the payoff.** Any ADR can be traced to every line that implements it:
+
+```bash
+# Find every file mentioning a specific ADR
+rg "ADR-0007"
+
+# Find every ADR marker in the codebase
+rg "ADR-\d{4}"
+
+# Find tests for a specific REQ
+rg "REQ-0003" tests/
+```
+
+### One commit per ADR
+
+When implementing, commit changes in units that map one-to-one to ADRs. The commit message carries the ADR ID so `git log` itself becomes a traceability surface.
+
+**Commit message format:**
+
+```
+<type>(<scope>): <short description> [ADR-NNNN]
+
+<optional body explaining what changed and why, referencing
+the ADR for fuller reasoning>
+```
+
+Examples:
+
+```
+feat(stats): add monthly-pages SQL view [ADR-0007]
+
+Implements the pre-aggregated view that powers the /stats/monthly
+endpoint. See ADR-0007 for why this is a view and not an on-read
+computation. Integration test covers insert/update/delete paths.
+```
+
+```
+fix(stats): bucket monthly stats in user timezone [ADR-0012 ← SCN-0007]
+
+Resolves the bug in SCN-0007 where users near date boundaries saw
+books in the wrong month. See ADR-0012 for the UTC-storage,
+timezone-on-bucket decision.
+```
+
+```
+chore(bookshelf): enforce DRY_RUN default in dev env [ADR-0003]
+```
+
+**Rules:**
+
+- **One ADR per commit when implementing that ADR.** A single commit may touch many files (migrations, code, tests, config) — that's fine, as long as every change traces to the same ADR.
+- **Mixed-ADR commits are only acceptable for tiny cross-cutting changes** (e.g., adding an import used by three features). Prefer splitting.
+- **Non-ADR commits use conventional-commit prefixes without the ADR tag**: `docs:`, `chore:`, `style:`, `test:`. A commit that only updates TASKS.md or fixes a typo doesn't need an ADR reference.
+- **Bug fixes that used the shortcut rule** (no ADR, trivial fix) reference the scenario directly: `fix(parser): handle null payload [SCN-0014]`.
+
+**`git log` becomes a queryable surface:**
+
+```bash
+# Every commit implementing a specific ADR
+git log --grep "ADR-0012"
+
+# Every commit related to a scenario (whether via ADR or shortcut)
+git log --grep "SCN-0007"
+
+# Recent ADR-tagged commits
+git log --grep "ADR-\d\{4\}" -E --oneline -20
+```
+
+### Closing the chain
+
+With both conventions in place, the traceability chain reaches all the way down:
+
+```
+REQ ← PLAN ← ADR ← TASKS.md ← git commit ← inline marker ← line of code
+```
+
+From any point you can walk in either direction:
+
+- **"Why is this line written this way?"** → read the inline marker → open the ADR → see `triggered_by` → trace up to REQ or SCN
+- **"What did we ship for ADR-0012?"** → `git log --grep "ADR-0012"` → see every commit → `git show <hash>` for the diffs
+- **"What code implements REQ-0003?"** → look at REQ-0003's `implemented_by.adrs` → grep each ADR ID → see every file that references them
+
+The chain has no gaps. Six months from now, a new contributor (or a fresh AI session) can land on any artifact and reconstruct the full story in minutes.
+
+### Adoption checklist
+
+To adopt these conventions on an existing project:
+
+1. Add a **Commit convention** section to `CLAUDE.md` showing the `[ADR-NNNN]` format
+2. Add an **Inline markers** line to the code conventions in `CLAUDE.md`
+3. When creating new ADRs, mention in the `## Implementation` section where markers should go
+4. No retrofit required — start with new code; existing code picks up markers as it's touched
+
+---
+
 ## AI-Assistant Memory (`.claude/` directory)
 
 Separate from project docs. This is the AI assistant's persistent memory across sessions (applies to Claude Code specifically; other tools have similar mechanisms).
@@ -680,8 +835,9 @@ When you start a new project with an AI coding assistant:
 6. **Write `PLAN-0001`** for the initial architecture; get user acceptance
 7. **Write ADR-0001 through ADR-000N** for the plan's key decisions
 8. **Populate TASKS.md** with the initial implementation breakdown
-9. **Add the two feedback memories** to `.claude/projects/*/memory/`
-10. **Tell the assistant**: "Read CLAUDE.md, TASKS.md, and docs/README.md before starting. Follow the Forward Pipeline for new work and the Bug-to-Fix Pipeline for issues."
+9. **Add commit & inline-marker conventions to `CLAUDE.md`** (see the Code-Level Traceability section above)
+10. **Add the two feedback memories** to `.claude/projects/*/memory/`
+11. **Tell the assistant**: "Read CLAUDE.md, TASKS.md, and docs/README.md before starting. Follow the Forward Pipeline for new work and the Bug-to-Fix Pipeline for issues. Mark code with ADR references and commit per-ADR."
 
 From then on:
 
@@ -691,6 +847,8 @@ From then on:
 - Every debugging session → SCN (even if trivial)
 - Every correction to the assistant → feedback memory
 - Every milestone → TASKS.md update
+- **Every non-obvious line of code → inline ADR marker**
+- **Every implementation commit → `[ADR-NNNN]` in the message**
 
 ---
 
@@ -705,6 +863,8 @@ From then on:
 | Architectural decision | `docs/decisions/ADR-NNNN-*.md` | Any non-trivial choice | `triggered_by: REQ\|PLAN\|SCN\|null`, `implementation_tasks` |
 | Bug / incident | `docs/knowledge/scenarios/SCN-NNNN-*.md` | Upon discovery, before fixing | `related_req`, `resolved_by: ADR` |
 | How things work | `docs/knowledge/` | When you learn something non-obvious | Link to relevant ADRs/REQs |
+| Inline marker in code | Comment at definition site | Any non-obvious code backed by an ADR | `// ADR-NNNN` or `// ADR-NNNN ← SCN-NNNN` |
+| Implementation commit | git commit message | Each commit that implements an ADR | `[ADR-NNNN]` or `[ADR-NNNN ← SCN-NNNN]` suffix |
 | Assistant memory | `.claude/projects/*/memory/` | When the assistant should remember something | MEMORY.md indexes all |
 
 ---
@@ -718,7 +878,9 @@ At any moment, any person (or any AI session) should be able to answer:
 - **"What did we do about this requirement?"** → open the REQ → follow `implemented_by.plan` → read the PLAN → see `spawns_adrs` and `spawns_tasks`
 - **"What did we do about this bug?"** → open the SCN → follow `resolved_by` → read the ADR → see `implementation_tasks` in TASKS.md
 - **"Is this requirement done?"** → open the REQ → check `status: verified` and each acceptance criterion
+- **"Why is this line of code written this way?"** → read the inline ADR marker → open the ADR → follow `triggered_by` up to the REQ or SCN
+- **"Which commits implemented this ADR?"** → `git log --grep "ADR-NNNN"` → see the full implementation history
 
 If any of those chains break, the documentation has drifted. Fix it.
 
-The ID system is what makes this work. Six artifact types, each uniquely addressable, each linking to the others. No orphans, no lost reasoning, no "wait, why did we do it this way?" moments three months from now.
+The ID system is what makes this work. Six artifact types plus two code-level conventions, each uniquely addressable, each linking to the others. No orphans, no lost reasoning, no "wait, why did we do it this way?" moments three months from now.
