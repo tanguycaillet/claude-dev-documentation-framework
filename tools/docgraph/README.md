@@ -113,6 +113,150 @@ The same convention works on the CLI's MCP-tool output and through the
 `get_artifact` / `get_chain` tools. See `corpora.toml.example` for a
 copyable starter.
 
+## TASKS.md row format
+
+docgraph parses `TASKS.md` as a structured surface alongside the typed
+artifacts in `docs/`. Every row that matches the format below produces
+one Task record with a stable ID, a status, the upstream chain (refs),
+and an optional phase tag. Sub-bullets stay freeform Markdown and are
+aggregated into the task's body for full-text search.
+
+The file on disk is the source of truth. The parser is read-only: it
+never rewrites `TASKS.md`. You and any coding agent edit the file
+through normal text edits; the parser re-reads on each parse.
+
+### The row grammar
+
+```
+- [<STATUS>] **<ID>: <TITLE>** [`<REFS>`] [{phase: <PHASE>}] [<COMMENTARY>]
+```
+
+Component by component:
+
+- `<STATUS>` is one character inside `[]`:
+
+  | Marker | Status |
+  |---|---|
+  | `[ ]` | todo |
+  | `[~]` | in-progress |
+  | `[x]` (or `[X]`) | done |
+  | `[!]` | blocked |
+  | `[/]` | parked |
+  | `[]` | todo (parser warning, accepted as forgiving fallback) |
+
+- `<ID>` matches the regex `^[A-Z]+(?:-[A-Z0-9]+)+[a-z]?$`. Examples that
+  match: `BE-014`, `BE-014a`, `FE-DEV-1`, `EP-008`, `EP-008-P0`,
+  `TASK-0001`. Examples that do not match (skipped with a warning):
+  whitespace-bearing IDs like `EP-008 Phase 0`, lowercase prefixes,
+  digit-led tokens, bare-prefix-no-segment tokens like `BE`.
+
+- `<TITLE>` is everything after the first `: ` separator inside the bold
+  span. Titles are optional: a row whose bold span is just `**TASK-0001**`
+  parses as untitled with a warning.
+
+- `<REFS>` is the first backtick-quoted parens span on the line:
+
+  ```
+  `(<LEVEL_1> [<- <LEVEL_2> [<- <LEVEL_3>]])`
+  ```
+
+  Each level is a comma-separated list of typed-ids. ASCII (`<-`) and
+  Unicode (`←`) arrow forms both parse. Numeric shorthand is supported
+  inside a level: `ADR-0001,0005,0008` expands to
+  `[ADR-0001, ADR-0005, ADR-0008]` (the prefix from the first id
+  applies to bare numeric tails until the next arrow resets it).
+
+  Three concrete examples:
+
+  ```
+  `(ADR-0071 <- PLAN-0016 <- REQ-0018)`
+  `(ADR-0067, ADR-0068, ADR-0074, ADR-0075 <- PLAN-0015 <- REQ-0016)`
+  `(no upstream)`
+  ```
+
+  Anything outside the backtick span on the same line (commentary, dates,
+  status notes) is preserved as text but ignored by the parser.
+
+- `{phase: <PHASE>}` is optional; the value is a freeform slug. May appear
+  before or after the refs span. Tasks under an H3 section header that
+  declares its own phase inherit it; per-task phase tags override.
+
+### H3 section context
+
+```
+### [<LABEL>: <PLAN-ID>] [{phase: <PHASE>}]
+```
+
+Tasks under this header inherit `<PLAN-ID>` as a fallback PLAN ref (only
+applied when the task's own refs don't list a PLAN), and inherit the
+section's phase (only applied when the task has no explicit `{phase: ...}`).
+Sections can omit `<PLAN-ID>` (e.g. `### [Foundation]`) for label-only
+grouping; in that case nothing is inherited.
+
+### Sub-bullets
+
+Lines indented two or more spaces and starting with `- ` are sub-bullets
+of the most-recent task. They aggregate into the parent's `body` field
+(preserving leading dash, status, indentation), which feeds FTS. The
+parser does not parse sub-bullets as individual tasks; their checkboxes
+are visible to humans and to FTS but not to the typed graph.
+
+### Authoring rule for multi-segment IDs
+
+The ID regex permits multi-segment IDs like `FE-DEV-1` and `EP-008-P0`.
+The parser always extracts the first segment as the domain, regardless
+of `task_domains` content: `FE-DEV-1` resolves to domain `FE`, never to
+`FE-DEV`.
+
+When you create a new task ID, decide which case you are in:
+
+- **To group with an existing domain**, use a multi-segment ID under
+  that prefix. Example: a frontend task related to dev tooling becomes
+  `FE-DEV-1`, which resolves to domain `FE` ("Frontend").
+- **To get a separate domain** (its own label, queryable independently
+  via `--domain`), use a distinct flat prefix. Example: a dedicated
+  domain for FE dev tooling becomes `FEDEV-1`, configured as
+  `FEDEV = "Frontend dev tools"` under `[corpora.<name>.task_domains]`.
+
+Worked examples:
+
+| Author intent | Correct ID | Domain |
+|---|---|---|
+| New backend task | `BE-014` | `BE` |
+| Backend task variant (a/b/c suffix) | `BE-014a` | `BE` |
+| Phase N of EP-008 in the existing EP domain | `EP-008-P0` | `EP` |
+| Frontend task with dev-tools sub-context, **same FE domain** | `FE-DEV-1` | `FE` |
+| Separate FE-dev domain (own label + filterable) | `FEDEV-1` | `FEDEV` |
+
+### Configuring task_domains per corpus
+
+Each corpus may declare a prefix-to-label mapping in `corpora.toml`:
+
+```toml
+[corpora.myproject.task_domains]
+BE   = "Backend"
+FE   = "Frontend"
+AI   = "AI Ingestion"
+SEC  = "Security"
+```
+
+Keys must be uppercase letters only (no digits, dashes, or lowercase).
+Tasks whose prefix is in the map carry both `domain_id` (the bare
+prefix) and `domain_label` (the human-readable string). Tasks whose
+prefix isn't in the map carry `domain_id` (always set when the ID
+parses) and `domain_label = null`, plus a once-per-prefix parser
+warning. The map is optional: a corpus without it gets `domain_label =
+null` for every task.
+
+### What ships in M1 vs later
+
+Today (M1), `parse_tasks_file()` returns `Task` records in memory and
+the row format is locked. **Indexer integration, MCP tools, and chain
+queries that include tasks are M2 work**; the SQLite schema bumps and
+`get_chain` starts surfacing task children at that point. The migration
+script that rewrites `ADR.implementation_tasks` from string-titles to
+task IDs is M3.
+
 ## Registering with Claude Code
 
 Add a stdio MCP server in your Claude Code settings. From a project root
@@ -173,11 +317,11 @@ polling fallback on WSL), with a periodic full rescan safety net.
 - **Semantic search / embeddings.** docgraph is exact-match (BM25) only.
   Vector search over arbitrary prose is a separate concern and will land as
   a separate tool when it does.
-- **TASKS.md as a graph node.** Today, `implementation_tasks` and
-  `spawns_tasks` edge values are free-text strings. Making `TASKS.md` a
-  parseable, addressable artifact (with proper IDs) is on the roadmap; the
-  underlying edge model already distinguishes task-target from
-  artifact-target edges.
+- **Indexed task queries**. M1 ships the parser and the row format spec;
+  the indexer that persists tasks into SQLite, the `docgraph tasks`
+  CLI command, and the MCP `get_task` / `list_tasks` tools land in M2.
+  Until M2 ships, parse `TASKS.md` programmatically via
+  `docgraph.parser.parse_tasks_file(path, corpus_config)`.
 - **Cross-corpus traversal.** Each `get_chain` result is corpus-scoped.
   Two corpora that happen to share an ID don't get linked.
 

@@ -14,6 +14,24 @@ class ArtifactType(str, Enum):
     SCN = "SCN"
 
 
+class TaskStatus(str, Enum):
+    """The five task statuses parsed from TASKS.md row checkboxes (ADR-0001).
+
+    Mapping from row format:
+        [ ] -> todo
+        [~] -> in-progress
+        [x] -> done
+        [!] -> blocked
+        [/] -> parked
+    """
+
+    TODO = "todo"
+    IN_PROGRESS = "in-progress"
+    DONE = "done"
+    BLOCKED = "blocked"
+    PARKED = "parked"
+
+
 class EdgeType(str, Enum):
     """The seven typed edges resolved from artifact frontmatter.
 
@@ -66,6 +84,38 @@ class Edge(BaseModel):
     @property
     def target_is_artifact(self) -> bool:
         return self.edge_type not in _TASK_TARGET_EDGES
+
+
+class Task(BaseModel):
+    """A parseable row from TASKS.md (ADR-0001).
+
+    `domain_id` is always set when the ID matches the regex (the substring
+    of `id` before the first `-`, per ADR-0003). `domain_label` is the
+    looked-up human-readable label from CorpusConfig.task_domains, or None
+    for an unrecognized prefix.
+
+    `refs` is the flattened list of upstream typed-IDs from the row's
+    backticked annotation. `refs_by_level` carries the same data partitioned
+    by artifact kind so callers that care about the chain shape (e.g. "all
+    ADRs this task implements") don't have to re-classify.
+
+    `body` aggregates the task's freeform Markdown sub-bullets into one
+    string for FTS searchability; the file on disk keeps its original
+    nested structure (REQ-0001 confirmed: parser is read-only).
+    """
+
+    id: str
+    title: str | None = None
+    status: TaskStatus = TaskStatus.TODO
+    refs: list[str] = Field(default_factory=list)
+    refs_by_level: dict[str, list[str]] = Field(default_factory=dict)
+    domain_id: str | None = None
+    domain_label: str | None = None
+    phase: str | None = None
+    body: str = ""
+    source_path: Path
+    corpus: str = "default"
+    line_number: int
 
 
 class Graph(BaseModel):
