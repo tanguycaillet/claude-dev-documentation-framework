@@ -12,8 +12,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from docgraph.graph import build_graph
-from docgraph.models import Artifact, ArtifactType, Graph
+from docgraph.graph import build_graph, walk_chain
+from docgraph.models import ArtifactType, Graph
 from docgraph.parser import parse_directory
 
 
@@ -57,17 +57,16 @@ def cmd_get(graph: Graph, artifact_id: str) -> int:
 
 
 def cmd_chain(graph: Graph, artifact_id: str) -> int:
-    start = graph.get(artifact_id)
-    if start is None:
+    if graph.get(artifact_id) is None:
         print(f"Not found: {artifact_id}", file=sys.stderr)
         return 1
-    for depth, art, label in _walk_chain(graph, start):
-        prefix = "  " * depth
-        suffix = f" [{art.status or 'no status'}]: {art.title or ''}"
-        if label:
-            print(f"{prefix}{label} {art.id}{suffix}")
+    for step in walk_chain(graph, artifact_id):
+        prefix = "  " * step.depth
+        suffix = f" [{step.status or 'no status'}]: {step.title or ''}"
+        if step.via_edge:
+            print(f"{prefix}{step.via_edge} {step.artifact_id}{suffix}")
         else:
-            print(f"{art.id}{suffix}")
+            print(f"{step.artifact_id}{suffix}")
     return 0
 
 
@@ -81,58 +80,6 @@ def cmd_list(graph: Graph, type_str: str, status_filter: str | None) -> int:
     for a in artifacts:
         print(f"{a.id} [{a.status or 'no status'}]: {a.title or ''}")
     return 0
-
-
-def _walk_chain(
-    graph: Graph, start: Artifact
-) -> list[tuple[int, Artifact, str | None]]:
-    """Walk the typed-graph chain from `start`.
-
-    Returns a list of (depth, artifact, label) tuples; label is the edge
-    name + arrow indicating direction (`→` forward through frontmatter,
-    `←` inverse lookup). Cycles are broken by visited-set tracking.
-    """
-    chain: list[tuple[int, Artifact, str | None]] = [(0, start, None)]
-    visited = {start.id}
-
-    def step(current: Artifact, depth: int) -> None:
-        next_id, label = _next_in_chain(graph, current)
-        if next_id is None or next_id not in graph.artifacts or next_id in visited:
-            return
-        next_art = graph.artifacts[next_id]
-        chain.append((depth, next_art, label))
-        visited.add(next_id)
-        step(next_art, depth + 1)
-
-    step(start, 1)
-    return chain
-
-
-def _next_in_chain(
-    graph: Graph, current: Artifact
-) -> tuple[str | None, str | None]:
-    """One step of chain traversal, returns (next_artifact_id, edge_label)."""
-    fm = current.frontmatter
-    if current.type == ArtifactType.ADR:
-        tb = fm.get("triggered_by")
-        if isinstance(tb, str):
-            return tb, "triggered_by →"
-    elif current.type == ArtifactType.PLAN:
-        for req in graph.list_by_type(ArtifactType.REQ):
-            impl = req.frontmatter.get("implemented_by")
-            if isinstance(impl, dict) and impl.get("plan") == current.id:
-                return req.id, "implemented_by.plan ←"
-    elif current.type == ArtifactType.SCN:
-        rb = fm.get("resolved_by")
-        if isinstance(rb, str):
-            return rb, "resolved_by →"
-    elif current.type == ArtifactType.REQ:
-        impl = fm.get("implemented_by")
-        if isinstance(impl, dict):
-            p = impl.get("plan")
-            if isinstance(p, str):
-                return p, "implemented_by.plan →"
-    return None, None
 
 
 def _build_parser() -> argparse.ArgumentParser:

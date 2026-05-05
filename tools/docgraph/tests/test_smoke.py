@@ -42,10 +42,18 @@ def indexed(conn):
 
 def test_index_counts(indexed):
     _, stats = indexed
-    assert stats["forward"].artifacts == 4
-    assert stats["forward"].dangling == 0
-    assert stats["reactive"].artifacts == 2
-    assert stats["reactive"].dangling == 0
+
+    forward = stats["forward"]
+    assert forward.artifacts == 4
+    assert forward.dangling == 0
+    assert forward.knowledge == 0
+    assert forward.parse_errors == []
+
+    reactive = stats["reactive"]
+    assert reactive.artifacts == 2
+    assert reactive.dangling == 0
+    assert reactive.knowledge == 0
+    assert reactive.parse_errors == []
 
 
 def test_get_artifact_bare_id_finds_corpus(indexed):

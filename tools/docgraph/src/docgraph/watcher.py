@@ -36,8 +36,7 @@ class _MarkdownHandler(FileSystemEventHandler):
     def _is_md(event: FileSystemEvent) -> bool:
         if event.is_directory:
             return False
-        path = event.src_path
-        return str(path).endswith(".md")
+        return str(event.src_path).endswith(".md")
 
     def on_created(self, event):
         if self._is_md(event):
@@ -52,7 +51,14 @@ class _MarkdownHandler(FileSystemEventHandler):
             self._on_event()
 
     def on_moved(self, event):
-        if self._is_md(event):
+        # Renames cross the .md boundary in both directions: foo.md -> bar.txt
+        # (src is markdown) and foo.txt -> bar.md (dest is markdown). We need
+        # to reindex either way, so check both paths.
+        if event.is_directory:
+            return
+        src_md = str(event.src_path).endswith(".md")
+        dest_md = str(getattr(event, "dest_path", "")).endswith(".md")
+        if src_md or dest_md:
             self._on_event()
 
 
@@ -138,7 +144,8 @@ class FileWatcher:
         conn = connect(self.db_path)
         try:
             index(conn, self.docs_root, corpus=self.corpus)
-            self._reindex_count += 1
+            with self._lock:
+                self._reindex_count += 1
         finally:
             conn.close()
 

@@ -41,7 +41,7 @@ Verify the CLI:
 uv run docgraph --docs ../../examples/forward-pipeline-bookshelf-stats parse
 ```
 
-You should see counts for the three artifacts that ship in that example
+You should see counts for the four artifacts that ship in that example
 (REQ-0003, PLAN-0002, ADR-0007, ADR-0008) plus their resolved edges.
 
 ## CLI quickstart
