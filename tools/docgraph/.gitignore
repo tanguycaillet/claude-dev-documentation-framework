@@ -1,0 +1,8 @@
+# Local SQLite indexes (created at runtime by docgraph-mcp)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local user config (we ship corpora.toml.example; users keep their own)
+corpora.toml
