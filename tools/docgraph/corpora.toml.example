@@ -1,0 +1,20 @@
+# corpora.toml, multi-corpus configuration for docgraph
+#
+# Each corpus is a separate docs/ tree. docgraph indexes all of them into
+# one SQLite database; addresses can be either bare ids (e.g. `REQ-0001`,
+# spans all corpora) or prefixed (e.g. `myproject:REQ-0001`, scoped).
+#
+# Place this file at the working directory you'll launch `docgraph-mcp` from,
+# or pass an explicit path with `docgraph-mcp --config path/to/corpora.toml`.
+
+[corpora.myproject]
+path = "/absolute/path/to/myproject/docs"
+
+[corpora.another-project]
+path = "/absolute/path/to/another-project/docs"
+
+# Tip: use absolute paths. Relative paths resolve from the working directory
+# at server-start time; absolute paths survive reboots and `cd`.
+#
+# CLI override: any `--docs name=path` flag at launch time overrides the
+# TOML entry of the same name (and adds new ones).
