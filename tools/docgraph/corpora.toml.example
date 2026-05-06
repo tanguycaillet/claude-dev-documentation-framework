@@ -10,11 +10,36 @@
 [corpora.myproject]
 path = "/absolute/path/to/myproject/docs"
 
+# Optional: declare the task ID prefix vocabulary for this corpus. The parser
+# of TASKS.md reads each row's ID prefix and looks up the human-readable label
+# here. Default for new projects is a single TASK domain; multi-domain projects
+# typically declare per-area prefixes (Backend, Frontend, etc.).
+#
+# Keys must be uppercase letters only (^[A-Z]+$). Lowercase or composite keys
+# (e.g. `BE-DEV`) are rejected at load time. To group multiple ID styles under
+# one domain, use the first ID segment as the prefix; multi-segment IDs like
+# `FE-DEV-1` always resolve to domain `FE`.
+[corpora.myproject.task_domains]
+TASK = "Task"
+
 [corpora.another-project]
 path = "/absolute/path/to/another-project/docs"
+
+# Worked example: multi-domain project (e.g. a SaaS with backend, frontend,
+# AI ingestion, security, devops, testing). Each prefix becomes a queryable
+# domain; use `docgraph tasks --domain BE` to filter.
+#
+# [corpora.another-project.task_domains]
+# BE   = "Backend"
+# FE   = "Frontend"
+# AI   = "AI Ingestion"
+# SEC  = "Security"
+# OPS  = "DevOps"
+# TEST = "Testing"
 
 # Tip: use absolute paths. Relative paths resolve from the working directory
 # at server-start time; absolute paths survive reboots and `cd`.
 #
 # CLI override: any `--docs name=path` flag at launch time overrides the
-# TOML entry of the same name (and adds new ones).
+# TOML entry of the same name (and adds new ones). `task_domains` can only
+# be set via the TOML file (not the CLI).

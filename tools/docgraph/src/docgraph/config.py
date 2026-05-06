@@ -7,23 +7,38 @@ repeated `--docs` CLI flags (ad-hoc). CLI overrides TOML on name collision.
 comes from the path basename, with the literal `docs` basename collapsing to
 its parent directory name.
 
+Each corpus may declare an optional `[corpora.<name>.task_domains]` table
+mapping task ID prefixes to human-readable domain labels. Used by the
+TASKS.md parser (parse_tasks_file) to set Task.domain_label. Keys must
+match the uppercase-letters-only pattern; lowercase/digit/dash keys raise
+at load time.
+
 Public surface:
-    CorpusConfig                 , Pydantic (name, path)
+    CorpusConfig                 , Pydantic (name, path, task_domains)
     corpus_name_from_path(path)   -> str
     load_corpora(toml_path, cli_overrides) -> list[CorpusConfig]
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+# ADR-0003: keys in [corpora.<name>.task_domains] must be uppercase letters
+# only, matching the first segment of the task ID regex (ADR-0001). Lowercase
+# or composite keys (e.g. "BE-DEV") are rejected at load time so config drift
+# can't silently desync from the parser's domain extraction rule.
+_TASK_DOMAIN_KEY = re.compile(r"^[A-Z]+$")
 
 
 class CorpusConfig(BaseModel):
     name: str
     path: Path
+    task_domains: dict[str, str] = Field(default_factory=dict)
 
 
 def corpus_name_from_path(path: Path) -> str:
@@ -48,6 +63,32 @@ def _validate_corpus_name(name: str) -> None:
         raise ValueError("corpus name must be non-empty")
 
 
+def _validate_task_domains(corpus_name: str, raw: dict) -> dict[str, str]:
+    """Normalize and validate a [corpora.<name>.task_domains] block.
+
+    Keys must match `^[A-Z]+$` (ADR-0003). Values must be strings. The
+    block is optional; absence is equivalent to an empty dict.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"corpus {corpus_name!r}: task_domains must be a TOML table, got {type(raw).__name__}"
+        )
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not _TASK_DOMAIN_KEY.match(key):
+            raise ValueError(
+                f"corpus {corpus_name!r}: task_domains key {key!r} must be uppercase letters only "
+                f"(no digits, dashes, or lowercase). To group multiple ID styles under one domain, "
+                f"use the first ID segment as the prefix."
+            )
+        if not isinstance(value, str):
+            raise ValueError(
+                f"corpus {corpus_name!r}: task_domains[{key!r}] must be a string, got {type(value).__name__}"
+            )
+        out[key] = value
+    return out
+
+
 def _from_toml(toml_path: Path) -> dict[str, CorpusConfig]:
     if not toml_path.exists():
         raise FileNotFoundError(f"corpora.toml not found: {toml_path}")
@@ -58,7 +99,8 @@ def _from_toml(toml_path: Path) -> dict[str, CorpusConfig]:
     for name, body in corpora.items():
         _validate_corpus_name(name)
         path = body["path"]
-        out[name] = CorpusConfig(name=name, path=Path(path))
+        task_domains = _validate_task_domains(name, body.get("task_domains", {}))
+        out[name] = CorpusConfig(name=name, path=Path(path), task_domains=task_domains)
     return out
 
 
