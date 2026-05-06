@@ -93,6 +93,17 @@ def build_graph(
     """
     by_id: dict[str, Artifact] = {a.id: a for a in artifacts}
     tasks_by_id: dict[str, Task] = {t.id: t for t in (tasks or [])}
+    # Artifact and task ID spaces are disjoint by construction (artifact IDs
+    # match REQ/PLAN/ADR/SCN-N+; task IDs use other prefixes). If they
+    # collide, something authored is wrong; fail fast rather than silently
+    # letting one shadow the other.
+    overlap = by_id.keys() & tasks_by_id.keys()
+    if overlap:
+        raise ValueError(
+            f"artifact-task ID collision: {sorted(overlap)} appear in both spaces. "
+            "Artifact IDs (REQ/PLAN/ADR/SCN-N+) and task IDs (TASK/BE/FE/...-N+) "
+            "must be disjoint. Rename one side."
+        )
     nodes: dict[str, Any] = {**by_id, **tasks_by_id}
     edges: list[Edge] = []
     dangling: list[Edge] = []

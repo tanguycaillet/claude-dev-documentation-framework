@@ -72,16 +72,18 @@ class Artifact(BaseModel):
 
 
 class Edge(BaseModel):
-    """A typed relationship from an artifact to another node (artifact or task)."""
+    """A typed relationship from an artifact to another node (artifact or task).
+
+    After M2 every edge target is meant to resolve to a graph node; the
+    DB still stores a `target_is_node` column as a forward-compat slot
+    for any future non-node target type, but the in-memory Edge model
+    doesn't carry it. Callers that care about resolution status read
+    Graph.dangling_edges vs Graph.edges instead.
+    """
 
     source_id: str
     target: str
     edge_type: EdgeType
-
-    @property
-    def target_is_node(self) -> bool:
-        """Always True after M2: every edge's target is an addressable node."""
-        return True
 
 
 class Task(BaseModel):

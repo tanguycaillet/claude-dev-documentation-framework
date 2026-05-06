@@ -16,21 +16,13 @@ from docgraph.config import CorpusConfig
 from docgraph.graph import build_graph, walk_chain
 from docgraph.models import ArtifactType, Graph, TaskStatus
 from docgraph.parser import parse_directory, parse_tasks_file
-
-
-def _resolve_tasks_path(docs_root: Path) -> Path | None:
-    """Same inside-then-outside search the indexer uses."""
-    inside = docs_root / "TASKS.md"
-    if inside.exists():
-        return inside
-    sibling = docs_root.parent / "TASKS.md"
-    return sibling if sibling.exists() else None
+from docgraph.paths import resolve_tasks_path
 
 
 def _load_graph(docs_root: Path) -> tuple[Graph, list[str]]:
     artifacts, errors = parse_directory(docs_root)
     tasks = []
-    tasks_path = _resolve_tasks_path(docs_root)
+    tasks_path = resolve_tasks_path(docs_root)
     if tasks_path is not None:
         cfg = CorpusConfig(name="default", path=docs_root)
         tasks, task_errors = parse_tasks_file(tasks_path, cfg)

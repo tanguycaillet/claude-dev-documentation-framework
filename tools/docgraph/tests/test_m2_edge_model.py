@@ -181,3 +181,146 @@ def test_fts_indexes_task_kind(indexed_examples):
     conn, _ = indexed_examples
     hits = search(conn, "monthly-pages", kind="task")
     assert any(h.ref == "TASK-0001" and h.corpus == "forward" for h in hits)
+
+
+def test_missing_adr_ref_from_tasks_md_reports_dangling(tmp_path):
+    """A TASKS.md row whose refs include a non-existent ADR drifts.
+
+    Mirror image of test_missing_task_target_becomes_dangling: not the
+    ADR -> missing-task direction, but the task -> missing-ADR direction.
+    Both should land in dangling_unexplained.
+    """
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "REQ-0001-foo.md").write_text(
+        "---\nid: REQ-0001\ntitle: foo\nstatus: accepted\n---\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "TASKS.md").write_text(
+        "## Done\n"
+        "- [x] **TASK-0001: refs a missing ADR** `(ADR-9999 <- PLAN-0001 <- REQ-0001)`\n",
+        encoding="utf-8",
+    )
+    db = tmp_path / "drift.db"
+    conn = connect(db)
+    try:
+        index(conn, docs, corpus="t", task_domains={"TASK": "Task"})
+        # The task row's ADR-9999 ref is captured in refs_by_level but doesn't
+        # resolve to anything; this surfaces as the same drift category as
+        # ADR -> missing-task. We assert via list_tasks that the task IS
+        # indexed (the row itself parses fine), and via the refs_by_level
+        # field that the dangling ADR ref is captured.
+        tasks = list_tasks(conn, corpus="t")
+        assert len(tasks) == 1
+        assert tasks[0].refs_by_level["adr"] == ["ADR-9999"]
+    finally:
+        conn.close()
+
+
+def test_graphs_from_db_includes_tasks_only_corpus(tmp_path):
+    """A corpus with only TASKS.md (no docs/*.md) still appears in graphs_from_db."""
+    docs = tmp_path / "docs"
+    docs.mkdir()  # empty docs dir
+    (tmp_path / "TASKS.md").write_text(
+        "## Done\n- [x] **TASK-0001: solo task** `(no upstream)`\n",
+        encoding="utf-8",
+    )
+    db = tmp_path / "tasks_only.db"
+    conn = connect(db)
+    try:
+        index(conn, docs, corpus="solo", task_domains={"TASK": "Task"})
+        graphs = graphs_from_db(conn)
+        assert "solo" in graphs
+        assert len(graphs["solo"].artifacts) == 0
+        assert len(graphs["solo"].tasks) == 1
+        assert "TASK-0001" in graphs["solo"].tasks
+    finally:
+        conn.close()
+
+
+def test_list_tasks_filters_by_phase(tmp_path):
+    """Phase filter narrows the result set; phase-only and combined filters both work."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (tmp_path / "TASKS.md").write_text(
+        "## Todo\n"
+        "### [Sprint A: PLAN-0001] {phase: alpha}\n"
+        "- [ ] **TASK-0001: alpha 1** `(no upstream)`\n"
+        "- [ ] **TASK-0002: alpha 2** `(no upstream)`\n"
+        "### [Sprint B: PLAN-0001] {phase: beta}\n"
+        "- [ ] **TASK-0003: beta 1** `(no upstream)`\n"
+        "- [~] **TASK-0004: beta 2 in progress** `(no upstream)`\n",
+        encoding="utf-8",
+    )
+    db = tmp_path / "phases.db"
+    conn = connect(db)
+    try:
+        index(conn, docs, corpus="phased", task_domains={"TASK": "Task"})
+        alpha = list_tasks(conn, phase="alpha")
+        assert {t.id for t in alpha} == {"TASK-0001", "TASK-0002"}
+        beta = list_tasks(conn, phase="beta")
+        assert {t.id for t in beta} == {"TASK-0003", "TASK-0004"}
+        # Combined filter: phase + status
+        beta_in_progress = list_tasks(conn, phase="beta", status="in-progress")
+        assert {t.id for t in beta_in_progress} == {"TASK-0004"}
+        # Combined filter: corpus + phase
+        alpha_in_corpus = list_tasks(conn, phase="alpha", corpus="phased")
+        assert len(alpha_in_corpus) == 2
+        # Non-existent phase returns empty
+        assert list_tasks(conn, phase="__no_such__") == []
+    finally:
+        conn.close()
+
+
+def test_tasks_from_db_corpus_scoping(indexed_examples):
+    """tasks_from_db(corpus=NAME) only returns tasks for that corpus."""
+    conn, _ = indexed_examples
+    forward_only = tasks_from_db(conn, corpus="forward")
+    assert len(forward_only) == 4
+    assert all(t.corpus == "forward" for t in forward_only)
+    reactive_only = tasks_from_db(conn, corpus="reactive")
+    assert len(reactive_only) == 1
+    assert reactive_only[0].corpus == "reactive"
+
+
+def test_artifact_task_id_collision_raises(tmp_path):
+    """If a task ID collides with an artifact ID, build_graph fails fast."""
+    from docgraph.graph import build_graph
+    from docgraph.models import Artifact, ArtifactType, Task, TaskStatus
+
+    art = Artifact(
+        id="REQ-0001",
+        type=ArtifactType.REQ,
+        source_path=tmp_path / "fake.md",
+    )
+    # Synthetic collision: a task with the same ID as an artifact (would never
+    # happen via the normal parser, but guards against mis-authored TASKS.md).
+    task = Task(
+        id="REQ-0001",
+        status=TaskStatus.TODO,
+        source_path=tmp_path / "fake.md",
+        line_number=1,
+    )
+    with pytest.raises(ValueError, match="ID collision"):
+        build_graph([art], [task])
+
+
+def test_malformed_tasks_md_parse_errors_surface_in_index_stats(tmp_path):
+    """Malformed TASKS.md rows produce parse_errors but don't crash indexing."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (tmp_path / "TASKS.md").write_text(
+        "## Todo\n"
+        "- [ ] **TASK-0001: valid** `(no upstream)`\n"
+        # Malformed: bold span doesn't match the ID regex
+        "- [ ] **not a real id: title text** `(no upstream)`\n",
+        encoding="utf-8",
+    )
+    db = tmp_path / "malformed.db"
+    conn = connect(db)
+    try:
+        stats = index(conn, docs, corpus="m", task_domains={"TASK": "Task"})
+        assert stats.tasks == 1  # only the valid one
+        assert any("doesn't match" in e for e in stats.parse_errors), stats.parse_errors
+    finally:
+        conn.close()

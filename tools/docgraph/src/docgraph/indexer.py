@@ -27,6 +27,7 @@ from docgraph.config import CorpusConfig
 from docgraph.graph import build_graph
 from docgraph.models import Task
 from docgraph.parser import parse_directory, parse_tasks_file, walk_knowledge
+from docgraph.paths import resolve_tasks_path
 
 
 class IndexStats(BaseModel):
@@ -36,25 +37,6 @@ class IndexStats(BaseModel):
     dangling: int = 0
     knowledge: int = 0
     parse_errors: list[str] = Field(default_factory=list)
-
-
-def _resolve_tasks_path(docs_root: Path, override: Path | None) -> Path | None:
-    """Return the TASKS.md path for this corpus, or None if there isn't one.
-
-    Search order (inside-first):
-      1. `<docs_root>/TASKS.md` — self-contained example dirs ship this way.
-      2. `<docs_root>/../TASKS.md` — real projects keep TASKS.md sibling to docs/.
-
-    An explicit override wins. Missing files return None silently — corpora
-    without TASKS.md are valid (zero tasks indexed).
-    """
-    if override is not None:
-        return override if override.exists() else None
-    inside = docs_root / "TASKS.md"
-    if inside.exists():
-        return inside
-    sibling = docs_root.parent / "TASKS.md"
-    return sibling if sibling.exists() else None
 
 
 def index(
@@ -83,7 +65,7 @@ def index(
     # Resolve and parse TASKS.md (optional).
     tasks: list[Task] = []
     task_errors: list[str] = []
-    resolved_tasks_path = _resolve_tasks_path(docs_root, tasks_path)
+    resolved_tasks_path = resolve_tasks_path(docs_root, tasks_path)
     if resolved_tasks_path is not None:
         task_corpus_config = CorpusConfig(
             name=corpus,
@@ -143,21 +125,17 @@ def index(
         ],
     )
 
-    # After M2: every edge target resolves to a graph node (artifact or task).
-    # target_is_node is always 1 for typed-id edges; the column stays as a
-    # forward-compat slot for any future non-node edge type.
+    # After M2: every edge target is meant to resolve to a graph node.
+    # The target_is_node column means "did the target actually resolve to a
+    # node?" — 1 for resolved edges, 0 for dangling. is_dangling carries the
+    # same information from the opposite direction; the column stays as a
+    # forward-compat slot for future edge types whose targets aren't nodes
+    # at all (e.g. external URLs, commit hashes promoted from narrative).
     edge_rows = [
-        (
-            e.source_id,
-            corpus,
-            e.target,
-            e.edge_type.value,
-            1 if e.target_is_node else 0,
-            0,
-        )
+        (e.source_id, corpus, e.target, e.edge_type.value, 1, 0)
         for e in graph.edges
     ] + [
-        (e.source_id, corpus, e.target, e.edge_type.value, 1, 1)
+        (e.source_id, corpus, e.target, e.edge_type.value, 0, 1)
         for e in graph.dangling_edges
     ]
     conn.executemany(
