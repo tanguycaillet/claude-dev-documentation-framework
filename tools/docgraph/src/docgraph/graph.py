@@ -19,27 +19,24 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from docgraph.models import Artifact, ArtifactType, Edge, EdgeType, Graph
+from docgraph.models import Artifact, ArtifactType, Edge, EdgeType, Graph, Task
 
 
 # Anchored at start so genuine narrative ("First draft of REQ-0018 ...") is
 # not consumed; only verbose-but-unambiguous values yield a bare-id extraction.
+# After M2, this normalization runs on every edge target. Task IDs (BE-014,
+# TASK-0001, etc.) don't match this artifact-prefix regex and pass through
+# unchanged, which is correct: task-id strings are already canonical when
+# they come from `ADR.implementation_tasks` lists.
 _TYPED_ID_PREFIX = re.compile(r"^(?:REQ|PLAN|ADR|SCN)-\d+")
-
-_ARTIFACT_TARGET_EDGES = {
-    EdgeType.TRIGGERED_BY,
-    EdgeType.SUPERSEDES,
-    EdgeType.RESOLVED_BY,
-    EdgeType.IMPLEMENTED_BY_PLAN,
-    EdgeType.SPAWNS_ADRS,
-}
 
 
 def _normalize_artifact_target(target: str) -> str:
-    """Extract the leading typed-id prefix from a target string.
+    """Extract the leading typed-id prefix from an artifact-target string.
 
     Tolerates verbose annotations like 'ADR-0054 - description' by extracting
-    just 'ADR-0054'. Strings without a leading typed-id are returned as-is.
+    just 'ADR-0054'. Strings without a leading typed-id (including all task
+    IDs) are returned as-is.
     """
     match = _TYPED_ID_PREFIX.match(target.strip())
     return match.group(0) if match else target
@@ -49,16 +46,15 @@ def _emit(
     source_id: str,
     target: Any,
     edge_type: EdgeType,
-    artifacts: dict[str, Artifact],
+    nodes: dict[str, Any],
     edges: list[Edge],
     dangling: list[Edge],
 ) -> None:
     if not isinstance(target, str) or not target.strip():
         return
-    if edge_type in _ARTIFACT_TARGET_EDGES:
-        target = _normalize_artifact_target(target)
+    target = _normalize_artifact_target(target)
     edge = Edge(source_id=source_id, target=target, edge_type=edge_type)
-    if edge.target_is_artifact and edge.target not in artifacts:
+    if edge.target not in nodes:
         dangling.append(edge)
     else:
         edges.append(edge)
@@ -68,25 +64,47 @@ def _emit_list(
     source_id: str,
     targets: Any,
     edge_type: EdgeType,
-    artifacts: dict[str, Artifact],
+    nodes: dict[str, Any],
     edges: list[Edge],
     dangling: list[Edge],
 ) -> None:
     if not isinstance(targets, list):
         return
     for target in targets:
-        _emit(source_id, target, edge_type, artifacts, edges, dangling)
+        _emit(source_id, target, edge_type, nodes, edges, dangling)
 
 
-def build_graph(artifacts: list[Artifact]) -> Graph:
-    """Build an in-memory typed graph from a list of artifacts.
+def build_graph(
+    artifacts: list[Artifact],
+    tasks: list[Task] | None = None,
+) -> Graph:
+    """Build an in-memory typed graph from artifacts plus optional tasks.
 
-    Resolves the seven typed edges from each artifact's frontmatter. Edges to
-    artifact ids not present in the artifacts list are routed to
-    `dangling_edges`. Task-text edges (implementation_tasks, spawns_tasks)
-    are never dangling, their targets are free-text.
+    Resolves the seven typed edges from each artifact's frontmatter against
+    the merged (artifacts + tasks) node space. Edges whose targets aren't
+    in either dict are routed to `dangling_edges`. Task-target edges
+    (implementation_tasks, spawns_tasks) resolve to task IDs after M2;
+    missing task IDs become dangling-unexplained findings via the
+    validator's existing classifier.
+
+    The default-empty `tasks` argument preserves backward compatibility for
+    callers that pre-date M1; in that mode every task-target edge is
+    dangling, which is the pre-M2 behaviour expressed as drift.
     """
     by_id: dict[str, Artifact] = {a.id: a for a in artifacts}
+    tasks_by_id: dict[str, Task] = {t.id: t for t in (tasks or [])}
+    # Artifact and task ID spaces are disjoint by construction (artifact IDs
+    # match REQ/PLAN/ADR/SCN-N+; task IDs use other prefixes). If they
+    # collide, something authored is wrong; fail fast rather than silently
+    # letting one shadow the other.
+    overlap = by_id.keys() & tasks_by_id.keys()
+    if overlap:
+        raise ValueError(
+            f"artifact-task ID collision: {sorted(overlap)} appear in both spaces. "
+            "Artifact IDs (REQ/PLAN/ADR/SCN-N+) and task IDs (TASK/BE/FE/...-N+) "
+            "must be disjoint. Rename one side."
+        )
+    nodes: dict[str, Any] = {**by_id, **tasks_by_id}
     edges: list[Edge] = []
     dangling: list[Edge] = []
 
@@ -94,9 +112,9 @@ def build_graph(artifacts: list[Artifact]) -> Graph:
         fm = artifact.frontmatter
         sid = artifact.id
 
-        _emit(sid, fm.get("triggered_by"), EdgeType.TRIGGERED_BY, by_id, edges, dangling)
-        _emit(sid, fm.get("supersedes"), EdgeType.SUPERSEDES, by_id, edges, dangling)
-        _emit(sid, fm.get("resolved_by"), EdgeType.RESOLVED_BY, by_id, edges, dangling)
+        _emit(sid, fm.get("triggered_by"), EdgeType.TRIGGERED_BY, nodes, edges, dangling)
+        _emit(sid, fm.get("supersedes"), EdgeType.SUPERSEDES, nodes, edges, dangling)
+        _emit(sid, fm.get("resolved_by"), EdgeType.RESOLVED_BY, nodes, edges, dangling)
 
         implemented_by = fm.get("implemented_by")
         if isinstance(implemented_by, dict):
@@ -104,22 +122,27 @@ def build_graph(artifacts: list[Artifact]) -> Graph:
                 sid,
                 implemented_by.get("plan"),
                 EdgeType.IMPLEMENTED_BY_PLAN,
-                by_id,
+                nodes,
                 edges,
                 dangling,
             )
 
-        _emit_list(sid, fm.get("spawns_adrs"), EdgeType.SPAWNS_ADRS, by_id, edges, dangling)
+        _emit_list(sid, fm.get("spawns_adrs"), EdgeType.SPAWNS_ADRS, nodes, edges, dangling)
         _emit_list(
             sid, fm.get("implementation_tasks"), EdgeType.IMPLEMENTATION_TASKS,
-            by_id, edges, dangling,
+            nodes, edges, dangling,
         )
         _emit_list(
             sid, fm.get("spawns_tasks"), EdgeType.SPAWNS_TASKS,
-            by_id, edges, dangling,
+            nodes, edges, dangling,
         )
 
-    return Graph(artifacts=by_id, edges=edges, dangling_edges=dangling)
+    return Graph(
+        artifacts=by_id,
+        tasks=tasks_by_id,
+        edges=edges,
+        dangling_edges=dangling,
+    )
 
 
 # --- chain walker -------------------------------------------------------

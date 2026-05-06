@@ -5,8 +5,9 @@ spawns one FileWatcher per corpus, then starts a FastMCP server. Default
 transport is stdio (one server per Claude Code / Claude Desktop subprocess);
 `--http` opens an HTTP transport on `127.0.0.1:<port>` for shared use.
 
-Five MCP tools:
-    get_artifact, get_chain, list_artifacts, search_artifacts, validate_graph
+Seven MCP tools:
+    get_artifact, get_chain, list_artifacts, search_artifacts, validate_graph,
+    get_task, list_tasks
 
 Usage:
     docgraph-mcp --docs ./docs                  # single-corpus, stdio
@@ -24,12 +25,14 @@ from docgraph.config import CorpusConfig, load_corpora
 from docgraph.db import connect
 from docgraph.graph import ChainStep, walk_chain
 from docgraph.indexer import index_all
-from docgraph.models import Artifact
+from docgraph.models import Artifact, Task
 from docgraph.query import (
     get_artifact as _get_artifact,
+    get_task as _get_task,
     graph_from_db,
     graphs_from_db,
     list_artifacts as _list_artifacts,
+    list_tasks as _list_tasks,
     parse_artifact_address,
 )
 from docgraph.search import SearchHit, search as _search
@@ -146,8 +149,9 @@ def search_artifacts(
 ) -> list[SearchHit]:
     """Full-text search via FTS5 (BM25 ranked, with snippets).
 
-    Filters: kind in {'typed','knowledge'}; type in {'req','plan','adr','scn'};
-    corpus (any configured corpus name).
+    Filters: kind in {'typed','knowledge','task'}; type in {'req','plan','adr','scn'};
+    corpus (any configured corpus name). Task rows index against the
+    aggregated sub-bullet body.
     """
     conn = _conn()
     try:
@@ -167,6 +171,44 @@ def validate_graph(corpus: str | None = None) -> ValidationReport:
         if corpus is not None:
             return _validate_graph(graph_from_db(conn, corpus), corpus=corpus)
         return _validate_graphs(graphs_from_db(conn))
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def get_task(id: str, corpus: str | None = None) -> list[Task]:
+    """Fetch tasks (parsed from TASKS.md) by id.
+
+    `id` may be either bare (`TASK-0001`, `BE-014`) or prefixed
+    (`myproject:TASK-0001`). With no `corpus` arg, bare ids span every
+    configured corpus and the return is a list (singleton on unique
+    match, multi on collision).
+    """
+    conn = _conn()
+    try:
+        return _get_task(conn, id, corpus=corpus)
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def list_tasks(
+    status: str | None = None,
+    domain: str | None = None,
+    phase: str | None = None,
+    corpus: str | None = None,
+) -> list[Task]:
+    """List tasks. Filters: status, domain (prefix), phase, corpus.
+
+    All filters optional. Status values: todo / in-progress / done /
+    blocked / parked. Domain is the bare uppercase prefix (e.g. 'BE'),
+    not the human-readable label.
+    """
+    conn = _conn()
+    try:
+        return _list_tasks(
+            conn, status=status, domain=domain, phase=phase, corpus=corpus,
+        )
     finally:
         conn.close()
 
@@ -226,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         boot_conn.close()
 
     watchers = [
-        FileWatcher(_DB_PATH, c.path, corpus=c.name)
+        FileWatcher(_DB_PATH, c.path, corpus=c.name, task_domains=c.task_domains)
         for c in corpora
     ]
     for w in watchers:

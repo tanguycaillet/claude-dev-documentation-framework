@@ -5,8 +5,8 @@ status: accepted
 date: 2026-04-10
 triggered_by: PLAN-0002
 implementation_tasks:
-  - "Build monthly-pages SQL view"
-  - "Wire /stats/monthly API endpoint"
+  - TASK-0001
+  - TASK-0002
 supersedes: null
 superseded_by: null
 ---

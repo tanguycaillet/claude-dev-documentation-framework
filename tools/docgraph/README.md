@@ -248,14 +248,21 @@ parses) and `domain_label = null`, plus a once-per-prefix parser
 warning. The map is optional: a corpus without it gets `domain_label =
 null` for every task.
 
-### What ships in M1 vs later
+### What ships now vs later
 
-Today (M1), `parse_tasks_file()` returns `Task` records in memory and
-the row format is locked. **Indexer integration, MCP tools, and chain
-queries that include tasks are M2 work**; the SQLite schema bumps and
-`get_chain` starts surfacing task children at that point. The migration
-script that rewrites `ADR.implementation_tasks` from string-titles to
-task IDs is M3.
+After M2: tasks are first-class graph nodes. The indexer reads
+`TASKS.md` (alongside docs/), persists tasks into the `tasks` SQLite
+table, and the edge model resolves `IMPLEMENTATION_TASKS` and
+`SPAWNS_TASKS` against task IDs. Queries: `docgraph tasks
+[--status --domain --phase --corpus]` from the CLI, plus `get_task` /
+`list_tasks` MCP tools. Chains starting from an ADR surface its child
+tasks; `validate_graph` reports bidirectional drift (missing task IDs
+or missing artifact refs from `TASKS.md`) under `dangling_unexplained`.
+
+Still queued for **M3**: a `docgraph-migrate-adr-tasks` script that
+rewrites legacy string-title `ADR.implementation_tasks` to task-id
+format. ADRs in old format produce dangling-unexplained drift findings
+today, signalling the migration is needed.
 
 ## Registering with Claude Code
 
@@ -291,11 +298,17 @@ Once the server is up, an assistant can call:
 - **`list_artifacts(type=None, status=None, corpus=None)`**: directory
   listing, filterable.
 - **`search_artifacts(query, kind=None, type=None, corpus=None, limit=10)`**:
-  BM25-ranked FTS5 over titles + bodies. Snippet-highlighted.
+  BM25-ranked FTS5 over titles + bodies. `kind` accepts `'typed'`,
+  `'knowledge'`, or `'task'`. Snippet-highlighted.
 - **`validate_graph(corpus=None)`**: integrity report. Status
   inconsistencies, plus dangling edges partitioned into commit-hash
   shortcuts (framework-compliant), narrative explanations, and unexplained
-  references.
+  references. After M2: missing task IDs and unmigrated string-title
+  `implementation_tasks` lists surface as unexplained drift.
+- **`get_task(id, corpus=None)`**: full body + metadata for one task
+  parsed from TASKS.md. Same shape as `get_artifact`.
+- **`list_tasks(status=None, domain=None, phase=None, corpus=None)`**:
+  filterable task listing across configured corpora.
 
 All five return Pydantic models, so the JSON the assistant sees is
 self-describing.

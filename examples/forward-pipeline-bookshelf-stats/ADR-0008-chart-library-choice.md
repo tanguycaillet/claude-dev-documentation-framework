@@ -5,8 +5,8 @@ status: accepted
 date: 2026-04-10
 triggered_by: PLAN-0002
 implementation_tasks:
-  - "Chart.js integration"
-  - "Reading stats dashboard component"
+  - TASK-0003
+  - TASK-0004
 supersedes: null
 superseded_by: null
 ---

@@ -35,10 +35,12 @@ class TaskStatus(str, Enum):
 class EdgeType(str, Enum):
     """The seven typed edges resolved from artifact frontmatter.
 
-    Five point at artifact IDs (TRIGGERED_BY, SUPERSEDES, RESOLVED_BY,
-    IMPLEMENTED_BY_PLAN, SPAWNS_ADRS); two point at free-text task names
-    (IMPLEMENTATION_TASKS, SPAWNS_TASKS) since TASKS.md is not yet a
-    parsed graph node.
+    All seven point at addressable graph nodes: five at artifact IDs
+    (TRIGGERED_BY, SUPERSEDES, RESOLVED_BY, IMPLEMENTED_BY_PLAN,
+    SPAWNS_ADRS) and two at task IDs (IMPLEMENTATION_TASKS,
+    SPAWNS_TASKS). The task-target edges previously held free-text
+    titles; M2 of the TASKS.md-as-graph-node work flipped them to
+    resolve against task records.
     """
 
     TRIGGERED_BY = "triggered_by"
@@ -48,11 +50,6 @@ class EdgeType(str, Enum):
     SPAWNS_ADRS = "spawns_adrs"
     IMPLEMENTATION_TASKS = "implementation_tasks"
     SPAWNS_TASKS = "spawns_tasks"
-
-
-_TASK_TARGET_EDGES: frozenset[EdgeType] = frozenset(
-    {EdgeType.IMPLEMENTATION_TASKS, EdgeType.SPAWNS_TASKS}
-)
 
 
 class Artifact(BaseModel):
@@ -75,15 +72,18 @@ class Artifact(BaseModel):
 
 
 class Edge(BaseModel):
-    """A typed relationship from an artifact to another artifact or task-text."""
+    """A typed relationship from an artifact to another node (artifact or task).
+
+    After M2 every edge target is meant to resolve to a graph node; the
+    DB still stores a `target_is_node` column as a forward-compat slot
+    for any future non-node target type, but the in-memory Edge model
+    doesn't carry it. Callers that care about resolution status read
+    Graph.dangling_edges vs Graph.edges instead.
+    """
 
     source_id: str
     target: str
     edge_type: EdgeType
-
-    @property
-    def target_is_artifact(self) -> bool:
-        return self.edge_type not in _TASK_TARGET_EDGES
 
 
 class Task(BaseModel):
@@ -119,15 +119,23 @@ class Task(BaseModel):
 
 
 class Graph(BaseModel):
-    """In-memory typed graph of artifacts and their resolved edges."""
+    """In-memory typed graph of artifacts, tasks, and their resolved edges.
+
+    After M2 of the TASKS.md-as-graph-node work, tasks are addressable
+    nodes. `get()` looks up artifacts; use `get_task()` for tasks.
+    """
 
     artifacts: dict[str, Artifact] = Field(default_factory=dict)
+    tasks: dict[str, Task] = Field(default_factory=dict)
     edges: list[Edge] = Field(default_factory=list)
     dangling_edges: list[Edge] = Field(default_factory=list)
     parse_errors: list[str] = Field(default_factory=list)
 
     def get(self, artifact_id: str) -> Artifact | None:
         return self.artifacts.get(artifact_id)
+
+    def get_task(self, task_id: str) -> Task | None:
+        return self.tasks.get(task_id)
 
     def list_by_type(self, artifact_type: ArtifactType) -> list[Artifact]:
         return [a for a in self.artifacts.values() if a.type == artifact_type]
