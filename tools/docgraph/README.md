@@ -248,21 +248,45 @@ parses) and `domain_label = null`, plus a once-per-prefix parser
 warning. The map is optional: a corpus without it gets `domain_label =
 null` for every task.
 
+### Migrating legacy ADRs (`docgraph-migrate-adr-tasks`)
+
+Projects whose `ADR.implementation_tasks` were written in the old
+string-title format (before M2 made tasks addressable) need to be
+rewritten to use task IDs. The `docgraph-migrate-adr-tasks` console
+script handles this in a two-phase, hard-fail-on-partial way.
+
+```bash
+# Step 1: dry-run. Always exits 0; never writes.
+uv run docgraph-migrate-adr-tasks ./docs ./TASKS.md
+
+# Step 2: review the per-ADR report; resolve unmatched titles by
+# correcting either the ADR's title to match TASKS.md, or vice versa.
+
+# Step 3: apply. Writes only if every ADR is ready or no-op.
+# Aborts with exit 1 and zero writes if any ADR is blocked.
+uv run docgraph-migrate-adr-tasks --apply ./docs ./TASKS.md
+```
+
+Title matching is a strict three-step cascade: **exact** -> **case-
+insensitive** -> **whitespace-normalized**. There is no fuzzy matching:
+a false positive that picks the wrong task ID would silently corrupt
+the chain; an unmatched title is loud and fixable.
+
+The script is **idempotent**: ADRs whose `implementation_tasks` are
+already a list of typed IDs short-circuit to no-op. Re-running `--apply`
+after a successful migration is safe.
+
 ### What ships now vs later
 
-After M2: tasks are first-class graph nodes. The indexer reads
-`TASKS.md` (alongside docs/), persists tasks into the `tasks` SQLite
-table, and the edge model resolves `IMPLEMENTATION_TASKS` and
-`SPAWNS_TASKS` against task IDs. Queries: `docgraph tasks
-[--status --domain --phase --corpus]` from the CLI, plus `get_task` /
-`list_tasks` MCP tools. Chains starting from an ADR surface its child
-tasks; `validate_graph` reports bidirectional drift (missing task IDs
-or missing artifact refs from `TASKS.md`) under `dangling_unexplained`.
+After M3: full pipeline complete. The framework's traceability invariant
+(`REQ <- PLAN <- ADR <- TASKS.md <- git commit <- inline marker <- line of code`)
+is structurally enforced end-to-end. Adopters can:
 
-Still queued for **M3**: a `docgraph-migrate-adr-tasks` script that
-rewrites legacy string-title `ADR.implementation_tasks` to task-id
-format. ADRs in old format produce dangling-unexplained drift findings
-today, signalling the migration is needed.
+- Author tasks in TASKS.md per the row format above
+- Reference task IDs from `ADR.implementation_tasks`
+- Use the migration script to convert legacy string-title format
+- Query the chain via CLI (`docgraph chain ADR-NNNN`) or MCP tools
+- Validate drift bidirectionally via `docgraph validate`
 
 ## Registering with Claude Code
 

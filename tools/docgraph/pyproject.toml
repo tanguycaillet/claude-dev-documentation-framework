@@ -16,6 +16,7 @@ dependencies = [
 [project.scripts]
 docgraph = "docgraph.cli:main"
 docgraph-mcp = "docgraph.mcp_server:main"
+docgraph-migrate-adr-tasks = "docgraph.migrate:main"
 
 [dependency-groups]
 dev = [
