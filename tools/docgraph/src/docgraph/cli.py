@@ -12,14 +12,30 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from docgraph.config import CorpusConfig
 from docgraph.graph import build_graph, walk_chain
-from docgraph.models import ArtifactType, Graph
-from docgraph.parser import parse_directory
+from docgraph.models import ArtifactType, Graph, TaskStatus
+from docgraph.parser import parse_directory, parse_tasks_file
+
+
+def _resolve_tasks_path(docs_root: Path) -> Path | None:
+    """Same inside-then-outside search the indexer uses."""
+    inside = docs_root / "TASKS.md"
+    if inside.exists():
+        return inside
+    sibling = docs_root.parent / "TASKS.md"
+    return sibling if sibling.exists() else None
 
 
 def _load_graph(docs_root: Path) -> tuple[Graph, list[str]]:
     artifacts, errors = parse_directory(docs_root)
-    return build_graph(artifacts), errors
+    tasks = []
+    tasks_path = _resolve_tasks_path(docs_root)
+    if tasks_path is not None:
+        cfg = CorpusConfig(name="default", path=docs_root)
+        tasks, task_errors = parse_tasks_file(tasks_path, cfg)
+        errors = errors + task_errors
+    return build_graph(artifacts, tasks), errors
 
 
 def cmd_parse(graph: Graph, errors: list[str]) -> int:
@@ -67,6 +83,16 @@ def cmd_chain(graph: Graph, artifact_id: str) -> int:
             print(f"{prefix}{step.via_edge} {step.artifact_id}{suffix}")
         else:
             print(f"{step.artifact_id}{suffix}")
+        # When this step is an ADR, surface its child tasks (tasks whose
+        # refs_by_level.adr includes this ADR id).
+        if step.artifact_id.startswith("ADR-"):
+            child_prefix = "  " * (step.depth + 1)
+            for task in graph.tasks.values():
+                if step.artifact_id in task.refs_by_level.get("adr", []):
+                    print(
+                        f"{child_prefix}implementation_tasks -> {task.id} "
+                        f"[{task.status.value}]: {task.title or ''}"
+                    )
     return 0
 
 
@@ -79,6 +105,30 @@ def cmd_list(graph: Graph, type_str: str, status_filter: str | None) -> int:
         artifacts = [a for a in artifacts if a.status == status_filter]
     for a in artifacts:
         print(f"{a.id} [{a.status or 'no status'}]: {a.title or ''}")
+    return 0
+
+
+def cmd_tasks(
+    graph: Graph,
+    status_filter: str | None,
+    domain_filter: str | None,
+    phase_filter: str | None,
+) -> int:
+    """List tasks in the graph, filtered by status / domain / phase."""
+    tasks = list(graph.tasks.values())
+    tasks.sort(key=lambda t: (str(t.source_path), t.line_number))
+    if status_filter is not None:
+        tasks = [t for t in tasks if t.status.value == status_filter]
+    if domain_filter is not None:
+        tasks = [t for t in tasks if t.domain_id == domain_filter]
+    if phase_filter is not None:
+        tasks = [t for t in tasks if t.phase == phase_filter]
+    for t in tasks:
+        domain_note = f" ({t.domain_id})" if t.domain_id else ""
+        phase_note = f" {{phase: {t.phase}}}" if t.phase else ""
+        print(
+            f"{t.id} [{t.status.value}]{domain_note}{phase_note}: {t.title or ''}"
+        )
     return 0
 
 
@@ -106,6 +156,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("type", choices=["req", "plan", "adr", "scn"])
     p_list.add_argument("--status", help="filter by status")
 
+    p_tasks = sub.add_parser("tasks", help="list tasks (parsed from TASKS.md), filtered")
+    p_tasks.add_argument(
+        "--status",
+        choices=[s.value for s in TaskStatus],
+        help="filter by task status (todo / in-progress / done / blocked / parked)",
+    )
+    p_tasks.add_argument("--domain", help="filter by domain prefix (e.g. BE)")
+    p_tasks.add_argument("--phase", help="filter by phase tag")
+
     return p
 
 
@@ -121,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_chain(graph, args.id)
     if args.cmd == "list":
         return cmd_list(graph, args.type, args.status)
+    if args.cmd == "tasks":
+        return cmd_tasks(graph, args.status, args.domain, args.phase)
     return 1
 
 

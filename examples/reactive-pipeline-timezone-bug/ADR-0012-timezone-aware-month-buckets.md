@@ -5,7 +5,7 @@ status: accepted
 date: 2026-04-13
 triggered_by: SCN-0007
 implementation_tasks:
-  - "Store finished_at timezone correctly"
+  - TASK-0001
 supersedes: null
 superseded_by: null
 ---

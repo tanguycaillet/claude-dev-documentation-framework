@@ -1,13 +1,18 @@
-"""Indexer: walks docs root(s), parses, persists artifacts + edges into SQLite.
+"""Indexer: walks docs root(s), parses, persists artifacts + tasks + edges into SQLite.
 
 Per-corpus full-refresh: each corpus's rows are deleted and rewritten on
 reindex; other corpora are untouched. Idempotent within a corpus, read-only
 against the corpus files.
 
+After M2: also walks `<docs_root>/../TASKS.md` (sibling to the docs/
+directory) when present, parses it via parse_tasks_file, and persists
+tasks alongside artifacts. Tasks become resolvable graph nodes for the
+edge-resolution pass.
+
 Public surface:
-    IndexStats                                              counts + errors
-    index(conn, docs_root, *, corpus="default")             -> IndexStats
-    index_all(conn, corpora)                                -> dict[name, IndexStats]
+    IndexStats                                                                counts + errors
+    index(conn, docs_root, *, corpus, task_domains, tasks_path)               -> IndexStats
+    index_all(conn, corpora)                                                  -> dict[name, IndexStats]
 """
 
 import json
@@ -20,15 +25,36 @@ from pydantic import BaseModel, Field
 
 from docgraph.config import CorpusConfig
 from docgraph.graph import build_graph
-from docgraph.parser import parse_directory, walk_knowledge
+from docgraph.models import Task
+from docgraph.parser import parse_directory, parse_tasks_file, walk_knowledge
 
 
 class IndexStats(BaseModel):
     artifacts: int = 0
+    tasks: int = 0
     edges: int = 0
     dangling: int = 0
     knowledge: int = 0
     parse_errors: list[str] = Field(default_factory=list)
+
+
+def _resolve_tasks_path(docs_root: Path, override: Path | None) -> Path | None:
+    """Return the TASKS.md path for this corpus, or None if there isn't one.
+
+    Search order (inside-first):
+      1. `<docs_root>/TASKS.md` — self-contained example dirs ship this way.
+      2. `<docs_root>/../TASKS.md` — real projects keep TASKS.md sibling to docs/.
+
+    An explicit override wins. Missing files return None silently — corpora
+    without TASKS.md are valid (zero tasks indexed).
+    """
+    if override is not None:
+        return override if override.exists() else None
+    inside = docs_root / "TASKS.md"
+    if inside.exists():
+        return inside
+    sibling = docs_root.parent / "TASKS.md"
+    return sibling if sibling.exists() else None
 
 
 def index(
@@ -36,21 +62,41 @@ def index(
     docs_root: Path,
     *,
     corpus: str = "default",
+    task_domains: dict[str, str] | None = None,
+    tasks_path: Path | None = None,
 ) -> IndexStats:
     """Walk `docs_root`, parse, persist into SQLite scoped to `corpus`.
 
     Per-corpus full-refresh: deletes only `WHERE corpus = ?` rows (across
-    artifacts, edges via FK cascade, and FTS rows for both kinds). Other
-    corpora's rows are untouched.
+    artifacts, tasks, edges via FK cascade, and FTS rows for all three
+    kinds). Other corpora's rows are untouched.
 
     Idempotent within a corpus, running twice leaves the DB in the same
     state with no row duplication.
+
+    `task_domains` and `tasks_path` are optional. If `tasks_path` is None,
+    the indexer searches for `<docs_root>/../TASKS.md`; missing TASKS.md
+    is fine (zero tasks indexed).
     """
     artifacts, parse_errors = parse_directory(docs_root)
-    graph = build_graph(artifacts)
+
+    # Resolve and parse TASKS.md (optional).
+    tasks: list[Task] = []
+    task_errors: list[str] = []
+    resolved_tasks_path = _resolve_tasks_path(docs_root, tasks_path)
+    if resolved_tasks_path is not None:
+        task_corpus_config = CorpusConfig(
+            name=corpus,
+            path=docs_root,
+            task_domains=task_domains or {},
+        )
+        tasks, task_errors = parse_tasks_file(resolved_tasks_path, task_corpus_config)
+
+    graph = build_graph(artifacts, tasks)
     now = int(time.time())
 
     conn.execute("DELETE FROM artifacts WHERE corpus = ?", (corpus,))
+    conn.execute("DELETE FROM tasks WHERE corpus = ?", (corpus,))
 
     conn.executemany(
         """INSERT INTO artifacts
@@ -72,13 +118,41 @@ def index(
         ],
     )
 
+    conn.executemany(
+        """INSERT INTO tasks
+           (id, corpus, title, status, refs, refs_by_level, domain_id, domain_label,
+            phase, body, source_path, line_number, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                t.id,
+                corpus,
+                t.title,
+                t.status.value,
+                json.dumps(t.refs),
+                json.dumps(t.refs_by_level),
+                t.domain_id,
+                t.domain_label,
+                t.phase,
+                t.body,
+                str(t.source_path),
+                t.line_number,
+                now,
+            )
+            for t in graph.tasks.values()
+        ],
+    )
+
+    # After M2: every edge target resolves to a graph node (artifact or task).
+    # target_is_node is always 1 for typed-id edges; the column stays as a
+    # forward-compat slot for any future non-node edge type.
     edge_rows = [
         (
             e.source_id,
             corpus,
             e.target,
             e.edge_type.value,
-            1 if e.target_is_artifact else 0,
+            1 if e.target_is_node else 0,
             0,
         )
         for e in graph.edges
@@ -88,7 +162,7 @@ def index(
     ]
     conn.executemany(
         """INSERT OR IGNORE INTO edges
-           (source_id, corpus, target, edge_type, target_is_artifact, is_dangling)
+           (source_id, corpus, target, edge_type, target_is_node, is_dangling)
            VALUES (?, ?, ?, ?, ?, ?)""",
         edge_rows,
     )
@@ -114,14 +188,27 @@ def index(
         [(k.slug, corpus, k.title, k.content) for k in knowledge],
     )
 
+    # FTS rows for tasks (kind='task'). Body feeds searchability of
+    # sub-bullet text aggregated by parse_tasks_file.
+    conn.execute(
+        "DELETE FROM fts_artifacts WHERE kind = 'task' AND corpus = ?",
+        (corpus,),
+    )
+    conn.executemany(
+        "INSERT INTO fts_artifacts(ref, kind, corpus, title, content) "
+        "VALUES (?, 'task', ?, ?, ?)",
+        [(t.id, corpus, t.title, t.body) for t in graph.tasks.values()],
+    )
+
     conn.commit()
 
     return IndexStats(
         artifacts=len(graph.artifacts),
+        tasks=len(graph.tasks),
         edges=len(graph.edges),
         dangling=len(graph.dangling_edges),
         knowledge=len(knowledge),
-        parse_errors=parse_errors + kn_errors,
+        parse_errors=parse_errors + kn_errors + task_errors,
     )
 
 
@@ -131,6 +218,11 @@ def index_all(
 ) -> dict[str, IndexStats]:
     """Run `index()` for every corpus, return per-corpus stats keyed by name."""
     return {
-        c.name: index(conn, c.path, corpus=c.name)
+        c.name: index(
+            conn,
+            c.path,
+            corpus=c.name,
+            task_domains=c.task_domains,
+        )
         for c in corpora
     }

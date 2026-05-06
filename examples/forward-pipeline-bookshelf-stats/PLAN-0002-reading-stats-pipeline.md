@@ -6,10 +6,10 @@ date: 2026-04-10
 addresses: [REQ-0003]
 spawns_adrs: [ADR-0007, ADR-0008]
 spawns_tasks:
-  - "Build monthly-pages SQL view"
-  - "Wire /stats/monthly API endpoint"
-  - "Reading stats dashboard component"
-  - "Chart.js integration"
+  - TASK-0001
+  - TASK-0002
+  - TASK-0004
+  - TASK-0003
 accepted_by: alex
 accepted_on: 2026-04-10
 superseded_by: null

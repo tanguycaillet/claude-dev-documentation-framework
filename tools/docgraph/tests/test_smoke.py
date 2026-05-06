@@ -45,12 +45,14 @@ def test_index_counts(indexed):
 
     forward = stats["forward"]
     assert forward.artifacts == 4
+    assert forward.tasks == 4
     assert forward.dangling == 0
     assert forward.knowledge == 0
     assert forward.parse_errors == []
 
     reactive = stats["reactive"]
     assert reactive.artifacts == 2
+    assert reactive.tasks == 1
     assert reactive.dangling == 0
     assert reactive.knowledge == 0
     assert reactive.parse_errors == []

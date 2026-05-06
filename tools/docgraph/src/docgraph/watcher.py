@@ -69,12 +69,14 @@ class FileWatcher:
         docs_root: Path | str,
         *,
         corpus: str = "default",
+        task_domains: dict[str, str] | None = None,
         debounce_seconds: float = 0.3,
         rescan_seconds: float = 300.0,
     ):
         self.db_path = Path(db_path)
         self.docs_root = Path(docs_root)
         self.corpus = corpus
+        self.task_domains = task_domains or {}
         self.debounce_seconds = debounce_seconds
         self.rescan_seconds = rescan_seconds
 
@@ -143,7 +145,12 @@ class FileWatcher:
             self._debounce_timer = None
         conn = connect(self.db_path)
         try:
-            index(conn, self.docs_root, corpus=self.corpus)
+            index(
+                conn,
+                self.docs_root,
+                corpus=self.corpus,
+                task_domains=self.task_domains,
+            )
             with self._lock:
                 self._reindex_count += 1
         finally:

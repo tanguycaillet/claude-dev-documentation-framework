@@ -17,12 +17,13 @@ Public surface:
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DOCGRAPH_TABLES: tuple[str, ...] = (
     "schema_version",
     "fts_artifacts",
     "edges",
+    "tasks",
     "artifacts",
 )
 
@@ -48,12 +49,12 @@ SCHEMA: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_artifacts_id_only ON artifacts(id)",
     """
     CREATE TABLE IF NOT EXISTS edges (
-        source_id          TEXT NOT NULL,
-        corpus             TEXT NOT NULL DEFAULT 'default',
-        target             TEXT NOT NULL,
-        edge_type          TEXT NOT NULL,
-        target_is_artifact INTEGER NOT NULL CHECK(target_is_artifact IN (0, 1)),
-        is_dangling        INTEGER NOT NULL CHECK(is_dangling IN (0, 1)) DEFAULT 0,
+        source_id      TEXT NOT NULL,
+        corpus         TEXT NOT NULL DEFAULT 'default',
+        target         TEXT NOT NULL,
+        edge_type      TEXT NOT NULL,
+        target_is_node INTEGER NOT NULL CHECK(target_is_node IN (0, 1)),
+        is_dangling    INTEGER NOT NULL CHECK(is_dangling IN (0, 1)) DEFAULT 0,
         PRIMARY KEY (corpus, source_id, target, edge_type),
         FOREIGN KEY (corpus, source_id) REFERENCES artifacts(corpus, id) ON DELETE CASCADE
     )
@@ -62,6 +63,31 @@ SCHEMA: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_edges_type     ON edges(edge_type)",
     "CREATE INDEX IF NOT EXISTS idx_edges_corpus   ON edges(corpus)",
     "CREATE INDEX IF NOT EXISTS idx_edges_dangling ON edges(is_dangling) WHERE is_dangling = 1",
+    # Schema v2: tasks become a queryable graph node alongside artifacts.
+    # Mirrors the artifacts table shape with additional task-specific
+    # columns (refs, refs_by_level, domain_id/_label, phase, line_number).
+    """
+    CREATE TABLE IF NOT EXISTS tasks (
+        id            TEXT NOT NULL,
+        corpus        TEXT NOT NULL DEFAULT 'default',
+        title         TEXT,
+        status        TEXT NOT NULL,
+        refs          TEXT NOT NULL,         -- JSON list of typed-id strings
+        refs_by_level TEXT NOT NULL,         -- JSON object: {adr: [...], plan: [...], req: [...], scn: [...]}
+        domain_id     TEXT,
+        domain_label  TEXT,
+        phase         TEXT,
+        body          TEXT NOT NULL DEFAULT '',
+        source_path   TEXT NOT NULL,
+        line_number   INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (corpus, id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_domain ON tasks(domain_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_phase  ON tasks(phase)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_corpus ON tasks(corpus)",
     """
     CREATE VIRTUAL TABLE IF NOT EXISTS fts_artifacts USING fts5(
         ref,
