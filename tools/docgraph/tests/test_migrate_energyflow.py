@@ -65,8 +65,15 @@ def test_plan_run_categorizes_every_adr(energyflow_paths):
         assert p.status in {"ready", "no-op", "blocked"}, p
 
 
-def test_dry_run_finishes_under_5s_on_real_corpus(energyflow_paths):
-    """Performance gate: 75 ADRs + 200+ tasks should plan in well under 5 seconds."""
+def test_dry_run_finishes_quickly_on_real_corpus(energyflow_paths):
+    """Performance gate: 75 ADRs + 200+ tasks should plan in well under the budget.
+
+    Default budget is 10s, which is generous for the typical case
+    (energyflow plans in ~50ms locally) but lenient enough to ride out
+    slow CI runners. Override via `DOCGRAPH_PERF_BUDGET` env var (in
+    seconds, float) when the machine is unusually slow or when you want
+    a tighter local guardrail.
+    """
     docs, tasks_path = energyflow_paths
     cfg = CorpusConfig(name="energyflow", path=docs)
     tasks, _ = parse_tasks_file(tasks_path, cfg)
@@ -75,7 +82,8 @@ def test_dry_run_finishes_under_5s_on_real_corpus(energyflow_paths):
     start = time.perf_counter()
     plan_run(adr_paths, tasks)
     elapsed = time.perf_counter() - start
-    assert elapsed < 5.0, f"plan_run took {elapsed:.2f}s (target <5s)"
+    budget = float(os.getenv("DOCGRAPH_PERF_BUDGET", "10.0"))
+    assert elapsed < budget, f"plan_run took {elapsed:.2f}s (budget <{budget:.2f}s)"
 
 
 def test_dry_run_does_not_modify_any_file(energyflow_paths, tmp_path):

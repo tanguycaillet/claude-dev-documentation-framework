@@ -49,9 +49,21 @@ class TitleMatch:
     """One ADR title and its resolution outcome."""
 
     title: str
-    matched_task_id: str | None  # None when unmatched
-    cascade_level: str | None    # "exact" | "case_insensitive" | "whitespace_normalized" | None
-    ambiguous: bool = False      # True when multiple tasks matched at the same level
+    matched_task_id: str | None
+    """The task ID this title resolved to, or None when unmatched."""
+
+    cascade_level: str | None
+    """Which stage of the matching cascade resolved this title:
+    - "already_id"             pre-typed ID; bypasses the cascade
+    - "exact"                  task.title == title
+    - "case_insensitive"       case-folded equality
+    - "whitespace_normalized"  whitespace-collapsed + case-folded equality
+    - None                     no match at any stage
+    """
+
+    ambiguous: bool = False
+    """True when multiple tasks matched at the same cascade level (the
+    earliest-by-line-number wins; the warning surfaces in dry-run output)."""
 
 
 @dataclass
