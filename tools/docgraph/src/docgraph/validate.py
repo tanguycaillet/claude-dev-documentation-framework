@@ -18,10 +18,15 @@ import re
 
 from pydantic import BaseModel, Field, computed_field
 
-from docgraph.models import ArtifactType, Graph
+from docgraph.models import ArtifactType, EdgeType, Graph
 
 _HEX_HASH = re.compile(r"^[0-9a-f]{6,40}$")
 _NARRATIVE = re.compile(r"^this\s+scn", re.IGNORECASE)
+# ADR-0007: shape of a valid task-ID. Same regex as ADR-0001 / migrate.py.
+_TASK_ID_RE = re.compile(r"^[A-Z]+(?:-[A-Z0-9]+)+[a-z]?$")
+# ADR-0007: edges authored as free-text in legacy corpora; classifier
+# scopes legacy_text_titles to these.
+_TASK_TARGET_EDGES = {EdgeType.IMPLEMENTATION_TASKS, EdgeType.SPAWNS_TASKS}
 
 
 class ValidationFinding(BaseModel):
@@ -41,15 +46,24 @@ class ValidationReport(BaseModel):
     status_inconsistencies: list[ValidationFinding] = Field(default_factory=list)
     dangling_commit_hashes: list[DanglingFinding] = Field(default_factory=list)
     dangling_narrative: list[DanglingFinding] = Field(default_factory=list)
+    # ADR-0007: legacy free-text in implementation_tasks / spawns_tasks
+    # from corpora authored before the TASKS.md row-format spec stabilised.
+    # Informational; doesn't count toward has_errors.
+    legacy_text_titles: list[DanglingFinding] = Field(default_factory=list)
     dangling_unexplained: list[DanglingFinding] = Field(default_factory=list)
 
     @computed_field
     @property
     def has_errors(self) -> bool:
-        """True iff there are findings beyond framework-compliant shortcut-rule danglings.
+        """True iff there are findings beyond framework-compliant shortcut-rule
+        danglings or legacy free-text drift.
 
         Declared as `computed_field` so it round-trips through Pydantic's
         model_dump (and therefore the MCP serialization boundary).
+
+        ADR-0007: legacy_text_titles deliberately excluded — drift visibility
+        without gatekeeping. Forcing has_errors=True on every pre-spec corpus
+        would defeat the field's actionable signal.
         """
         return bool(self.status_inconsistencies or self.dangling_unexplained)
 
@@ -78,6 +92,7 @@ def validate_graphs(graphs: dict[str, Graph]) -> ValidationReport:
         merged.status_inconsistencies.extend(sub.status_inconsistencies)
         merged.dangling_commit_hashes.extend(sub.dangling_commit_hashes)
         merged.dangling_narrative.extend(sub.dangling_narrative)
+        merged.legacy_text_titles.extend(sub.legacy_text_titles)
         merged.dangling_unexplained.extend(sub.dangling_unexplained)
     return merged
 
@@ -153,13 +168,20 @@ def _check_status_inconsistencies(graph: Graph, corpus: str, report: ValidationR
 
 
 def _classify_dangling_edges(graph: Graph, corpus: str, report: ValidationReport) -> None:
-    """Partition dangling edges into commit-hash / narrative / unexplained.
+    """Partition dangling edges into four categories.
 
     The framework's shortcut rule allows trivial fixes to set
     `resolved_by: <commit-hash>` instead of an ADR id. Those edges are
     dangling-by-design; we surface them but they don't count as errors.
     Targets starting with "this SCN ..." are narrative explanations; same
     treatment.
+
+    ADR-0007: task-target edges (`implementation_tasks`, `spawns_tasks`)
+    whose target isn't a valid task-ID shape are treated as legacy
+    free-text drift — informational, not error-counting. Real broken
+    artifact-ID refs (`triggered_by: ADR-9999`) keep landing in
+    `dangling_unexplained` because their target *does* match the
+    artifact-ID shape, just doesn't resolve to a node.
     """
     for edge in graph.dangling_edges:
         finding = DanglingFinding(
@@ -172,5 +194,10 @@ def _classify_dangling_edges(graph: Graph, corpus: str, report: ValidationReport
             report.dangling_commit_hashes.append(finding)
         elif _NARRATIVE.match(edge.target):
             report.dangling_narrative.append(finding)
+        elif (
+            edge.edge_type in _TASK_TARGET_EDGES
+            and not _TASK_ID_RE.match(edge.target)
+        ):
+            report.legacy_text_titles.append(finding)
         else:
             report.dangling_unexplained.append(finding)
