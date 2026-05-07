@@ -26,6 +26,7 @@ from docgraph.db import connect
 from docgraph.graph import ChainStep, walk_chain
 from docgraph.indexer import index_all
 from docgraph.models import Artifact, Task
+from docgraph.parser import parse_directory  # ADR-0011: re-parse for validate_graph
 from docgraph.query import (
     get_artifact as _get_artifact,
     get_task as _get_task,
@@ -165,12 +166,32 @@ def search_artifacts(
 
 @mcp.tool()
 def validate_graph(corpus: str | None = None) -> ValidationReport:
-    """Run integrity checks. Without `corpus`, validates every configured corpus."""
+    """Run integrity checks. Without `corpus`, validates every configured corpus.
+
+    ADR-0011: re-parses each corpus's docs root to feed fresh parse_errors
+    into the validator. Cost is small (parser is fast); the validator is
+    rarely-called so the per-call re-parse stays cheap operationally.
+    """
     conn = _conn()
     try:
         if corpus is not None:
-            return _validate_graph(graph_from_db(conn, corpus), corpus=corpus)
-        return _validate_graphs(graphs_from_db(conn))
+            graph = graph_from_db(conn, corpus)
+            parse_errors: list[str] = []
+            cfg = next((c for c in _CORPORA if c.name == corpus), None)
+            if cfg is not None:
+                _, parse_errors = parse_directory(cfg.path)
+            return _validate_graph(
+                graph, corpus=corpus, parse_errors=parse_errors,
+            )
+        # Multi-corpus path: collect per-corpus parse_errors from each
+        # corpus's docs root.
+        graphs = graphs_from_db(conn)
+        per_corpus_errors: dict[str, list[str]] = {}
+        for c in _CORPORA:
+            _, errs = parse_directory(c.path)
+            if errs:
+                per_corpus_errors[c.name] = errs
+        return _validate_graphs(graphs, parse_errors=per_corpus_errors)
     finally:
         conn.close()
 

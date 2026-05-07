@@ -37,48 +37,88 @@ class DanglingFinding(BaseModel):
     edge_type: str
 
 
+class ParseErrorFinding(BaseModel):
+    """ADR-0011: parser-emitted error for malformed frontmatter or YAML.
+    Informational; not counted toward has_errors."""
+
+    corpus: str = "default"
+    message: str       # the parser's human-readable error string
+
+
 class ValidationReport(BaseModel):
     status_inconsistencies: list[ValidationFinding] = Field(default_factory=list)
     dangling_commit_hashes: list[DanglingFinding] = Field(default_factory=list)
     dangling_narrative: list[DanglingFinding] = Field(default_factory=list)
     dangling_unexplained: list[DanglingFinding] = Field(default_factory=list)
+    # ADR-0011: parser errors surfaced through the validator. Informational;
+    # excluded from has_errors per the same policy as legacy_text_titles
+    # (ADR-0007) and stale_knowledge (ADR-0009).
+    parse_errors: list[ParseErrorFinding] = Field(default_factory=list)
 
     @computed_field
     @property
     def has_errors(self) -> bool:
-        """True iff there are findings beyond framework-compliant shortcut-rule danglings.
+        """True iff there are findings beyond framework-compliant shortcut-rule
+        danglings or informational drift (parse_errors, stale_knowledge, etc.).
 
         Declared as `computed_field` so it round-trips through Pydantic's
         model_dump (and therefore the MCP serialization boundary).
+
+        ADR-0011: parse_errors deliberately excluded; drift visibility,
+        not gatekeeping.
         """
         return bool(self.status_inconsistencies or self.dangling_unexplained)
 
 
-def validate_graph(graph: Graph, corpus: str = "default") -> ValidationReport:
+def validate_graph(
+    graph: Graph,
+    corpus: str = "default",
+    parse_errors: list[str] | None = None,
+) -> ValidationReport:
     """Run integrity checks on one corpus's graph; return a partitioned report.
 
     Findings are tagged with `corpus`. For multi-corpus environments, prefer
     `validate_graphs()` which iterates and merges.
+
+    `parse_errors` (ADR-0011): parser-emitted error strings collected by the
+    caller (typically via `parse_directory(corpus.path)`). When provided,
+    each becomes a ParseErrorFinding. Informational; doesn't flip
+    has_errors.
     """
     report = ValidationReport()
     _check_status_inconsistencies(graph, corpus, report)
     _classify_dangling_edges(graph, corpus, report)
+    for err in parse_errors or []:
+        report.parse_errors.append(
+            ParseErrorFinding(corpus=corpus, message=err)
+        )
     return report
 
 
-def validate_graphs(graphs: dict[str, Graph]) -> ValidationReport:
+def validate_graphs(
+    graphs: dict[str, Graph],
+    parse_errors: dict[str, list[str]] | None = None,
+) -> ValidationReport:
     """Run `validate_graph` per corpus and merge findings into one report.
 
     Each finding carries its corpus tag, so callers can group/filter by
     corpus without re-running the validator.
+
+    `parse_errors` (ADR-0011): per-corpus mapping of parser-emitted error
+    strings. Missing keys → no parse-error findings for that corpus.
     """
     merged = ValidationReport()
     for corpus_name, graph in graphs.items():
-        sub = validate_graph(graph, corpus=corpus_name)
+        sub = validate_graph(
+            graph,
+            corpus=corpus_name,
+            parse_errors=(parse_errors or {}).get(corpus_name),
+        )
         merged.status_inconsistencies.extend(sub.status_inconsistencies)
         merged.dangling_commit_hashes.extend(sub.dangling_commit_hashes)
         merged.dangling_narrative.extend(sub.dangling_narrative)
         merged.dangling_unexplained.extend(sub.dangling_unexplained)
+        merged.parse_errors.extend(sub.parse_errors)
     return merged
 
 
