@@ -15,7 +15,7 @@ Public surface:
 """
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -165,7 +165,7 @@ class ChainStep(BaseModel):
     title: str | None = None
     status: str | None = None
     via_edge: str | None = None
-    node_kind: str = "artifact"  # ADR-0005: "artifact" | "task"
+    node_kind: Literal["artifact", "task"] = "artifact"  # ADR-0005
 
 
 def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
@@ -227,6 +227,15 @@ def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
     # ADR-0005: fan-out task descendants for every ADR/PLAN step. Walk in
     # original order, append tasks immediately after their parent. Implemented
     # as a rebuild rather than in-place mutation so depth stays monotonic.
+    #
+    # No `visited` deduplication on tasks: if the same task ID is referenced
+    # by both an ADR's implementation_tasks AND its parent PLAN's
+    # spawns_tasks (a common authoring shape -- the PLAN scopes the work,
+    # the ADR decomposes it into the same tasks), we deliberately emit the
+    # task once per parent edge. The two ChainSteps carry different
+    # via_edge labels ("implementation_tasks ->" vs "spawns_tasks ->"), so
+    # callers see *which* parent linked it. Deduping here would silently
+    # erase that information.
     rebuilt: list[ChainStep] = []
     for step in chain:
         rebuilt.append(step)
@@ -245,6 +254,9 @@ def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
                 continue
             task = graph.get_task(edge.target)
             if task is None:
+                # Defensive: edge target normally resolves post-M2, but a
+                # mid-edit corpus state may briefly desynchronise. Skip
+                # silently rather than synthesising a partial step.
                 continue
             rebuilt.append(
                 ChainStep(
