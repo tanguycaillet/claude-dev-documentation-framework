@@ -136,6 +136,11 @@ def build_graph(
             sid, fm.get("spawns_tasks"), EdgeType.SPAWNS_TASKS,
             nodes, edges, dangling,
         )
+        # ADR-0008: KB.explains -> EXPLAINS edges from KB to typed artifacts.
+        _emit_list(
+            sid, fm.get("explains"), EdgeType.EXPLAINS,
+            nodes, edges, dangling,
+        )
 
     return Graph(
         artifacts=by_id,
@@ -149,15 +154,15 @@ def build_graph(
 
 
 class ChainStep(BaseModel):
-    """One step in a chain walk: artifact OR task reached, depth, edge label.
+    """One step in a chain walk: artifact, task, or knowledge node reached.
 
     `node_kind="artifact"` (default) for REQ/PLAN/ADR/SCN; `node_kind="task"`
     for TASKS.md rows reached via implementation_tasks / spawns_tasks edges
-    (ADR-0005). The id field is `artifact_id` for both, kept as the field
-    name for backwards compatibility with pre-task-fanout callers; the
-    discriminator is `node_kind`. Task IDs and artifact IDs are guaranteed
-    disjoint by build_graph's collision check, so the ID itself is
-    unambiguous.
+    (ADR-0005); `node_kind="knowledge"` for KB articles reached via inverse
+    EXPLAINS traversal (ADR-0008). The id field is `artifact_id` for all
+    three kinds, kept for backwards compatibility with pre-fan-out callers;
+    the discriminator is `node_kind`. IDs are guaranteed disjoint across the
+    three spaces by build_graph's collision check.
     """
 
     depth: int
@@ -165,7 +170,8 @@ class ChainStep(BaseModel):
     title: str | None = None
     status: str | None = None
     via_edge: str | None = None
-    node_kind: Literal["artifact", "task"] = "artifact"  # ADR-0005
+    # ADR-0005 added "task"; ADR-0008 added "knowledge".
+    node_kind: Literal["artifact", "task", "knowledge"] = "artifact"
 
 
 def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
@@ -268,7 +274,44 @@ def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
                     node_kind="task",
                 )
             )
-    return rebuilt
+
+    # ADR-0008: knowledge fan-out. For each artifact step, find KB articles
+    # whose `explains` list contains this artifact's id (inverse EXPLAINS
+    # traversal). Append at parent_depth + 1 with via_edge="explained_by ←"
+    # to mirror the inverse-direction labelling used elsewhere (e.g.
+    # PLAN's "implemented_by.plan ←").
+    #
+    # Done as a third pass over `rebuilt` so knowledge fan-out for an
+    # artifact lands AFTER its task fan-out, keeping per-parent ordering
+    # predictable: artifact → its tasks → its explanations → next artifact.
+    final: list[ChainStep] = []
+    for step in rebuilt:
+        final.append(step)
+        if step.node_kind != "artifact":
+            continue
+        # Inverse EXPLAINS: walk all KB artifacts and check whether they
+        # point at this step. O(K) per artifact step where K = number of
+        # KB articles in the corpus; trivial at any realistic scale.
+        for kb in graph.list_by_type(ArtifactType.KB):
+            kb_explains = kb.frontmatter.get("explains") or []
+            if not isinstance(kb_explains, list):
+                continue
+            if any(
+                isinstance(t, str)
+                and _normalize_artifact_target(t) == step.artifact_id
+                for t in kb_explains
+            ):
+                final.append(
+                    ChainStep(
+                        depth=step.depth + 1,
+                        artifact_id=kb.id,
+                        title=kb.title,
+                        status=kb.status,
+                        via_edge="explained_by ←",
+                        node_kind="knowledge",
+                    )
+                )
+    return final
 
 
 def _next_in_chain(graph: Graph, current: Artifact) -> tuple[str | None, str | None]:

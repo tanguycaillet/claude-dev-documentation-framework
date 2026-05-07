@@ -9,6 +9,7 @@ Public surface:
 """
 
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +17,11 @@ import frontmatter
 from pydantic import BaseModel, Field
 
 from docgraph.config import CorpusConfig
-from docgraph.models import Artifact, ArtifactType, Task, TaskStatus
+from docgraph.models import Artifact, ArtifactType, KBKind, KBStatus, Task, TaskStatus
 
-_TYPED_ID_PATTERN = re.compile(r"^(REQ|PLAN|ADR|SCN)-\d+$")
+# ADR-0008: KB joins the typed-artifact set. Pattern allows the standard
+# optional lowercase suffix (`KB-0007a`) per ADR-0001's id regex.
+_TYPED_ID_PATTERN = re.compile(r"^(REQ|PLAN|ADR|SCN|KB)-\d+[a-z]?$")
 
 
 def _classify_id(artifact_id: str) -> ArtifactType | None:
@@ -26,12 +29,64 @@ def _classify_id(artifact_id: str) -> ArtifactType | None:
     return ArtifactType(match.group(1)) if match else None
 
 
+def _validate_kb_frontmatter(metadata: dict, path: Path) -> list[str]:
+    """ADR-0008: validate KB-required frontmatter fields. Returns a list of
+    human-readable error strings; empty list means clean.
+
+    The artifact still indexes even if validation fails — the caller decides
+    whether to surface validation errors as parse_errors. Type values that
+    fail validation simply don't enter the typed pool of stale-checkable
+    KBs (`status` and `last_verified` are required for the freshness
+    check; bad values mean the KB is in the graph but invisible to the
+    drift signal).
+    """
+    errors: list[str] = []
+    # title and id are checked at the call-site; here we cover kind +
+    # status + last_verified.
+    kind = metadata.get("kind")
+    if kind is None:
+        errors.append(f"{path}: KB missing required `kind` field")
+    elif kind not in {k.value for k in KBKind}:
+        errors.append(
+            f"{path}: KB has invalid `kind={kind!r}`; expected one of "
+            f"{sorted(k.value for k in KBKind)}"
+        )
+
+    status = metadata.get("status")
+    if status is None:
+        errors.append(f"{path}: KB missing required `status` field")
+    elif status not in {s.value for s in KBStatus}:
+        errors.append(
+            f"{path}: KB has invalid `status={status!r}`; expected one of "
+            f"{sorted(s.value for s in KBStatus)}"
+        )
+
+    last_verified = metadata.get("last_verified")
+    if last_verified is None:
+        errors.append(f"{path}: KB missing required `last_verified` field")
+    elif not isinstance(last_verified, (date, str)):
+        errors.append(
+            f"{path}: KB `last_verified` must be ISO YYYY-MM-DD; got "
+            f"{type(last_verified).__name__}"
+        )
+    elif isinstance(last_verified, str):
+        # Normalise: YAML may yield a string if quoted; try to parse as ISO.
+        try:
+            date.fromisoformat(last_verified)
+        except ValueError:
+            errors.append(
+                f"{path}: KB `last_verified={last_verified!r}` is not a valid "
+                f"ISO YYYY-MM-DD date"
+            )
+    return errors
+
+
 def parse_file(path: Path) -> Artifact | None:
     """Parse a markdown file with YAML frontmatter into an Artifact.
 
     Returns None when the file has no `id` frontmatter or its id doesn't match
-    the typed pattern (REQ|PLAN|ADR|SCN-N+). Knowledge articles, READMEs, and
-    TASKS.md are silently skipped this way.
+    the typed pattern (REQ|PLAN|ADR|SCN|KB-N+). Knowledge articles without
+    a typed id, READMEs, and TASKS.md are silently skipped this way.
 
     Raises FileNotFoundError if `path` doesn't exist, or yaml.YAMLError on
     malformed frontmatter.
@@ -59,6 +114,11 @@ def parse_directory(root: Path) -> tuple[list[Artifact], list[str]]:
 
     Read-only: never mutates corpus files. Per-file parse failures are
     captured as human-readable strings and don't abort the walk.
+
+    ADR-0008: KB artifacts also get frontmatter-shape validation (kind,
+    status, last_verified). Validation errors join the returned errors
+    list but the artifact still indexes — graph participation is more
+    valuable than strict rejection at parse time.
     """
     artifacts: list[Artifact] = []
     errors: list[str] = []
@@ -71,6 +131,8 @@ def parse_directory(root: Path) -> tuple[list[Artifact], list[str]]:
             errors.append(f"{md_path}: {type(exc).__name__}: {exc}")
             continue
         if artifact is not None:
+            if artifact.type == ArtifactType.KB:
+                errors.extend(_validate_kb_frontmatter(artifact.frontmatter, md_path))
             artifacts.append(artifact)
     return artifacts, errors
 

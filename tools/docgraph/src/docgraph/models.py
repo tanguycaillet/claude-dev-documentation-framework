@@ -12,6 +12,31 @@ class ArtifactType(str, Enum):
     PLAN = "PLAN"
     ADR = "ADR"
     SCN = "SCN"
+    KB = "KB"  # ADR-0008: knowledge articles as first-class typed artifacts
+
+
+class KBKind(str, Enum):
+    """Operational-knowledge taxonomy per ADR-0008. Required field on
+    every KB artifact's frontmatter; unknown values are parse errors so
+    authoring drift is visible.
+    """
+
+    HOWTO = "howto"        # tool / interface usage
+    PLAYBOOK = "playbook"  # workflow / strategy end-to-end
+    RUNBOOK = "runbook"    # incident response / decision tree
+    LINEAGE = "lineage"    # supersession / changelog
+
+
+class KBStatus(str, Enum):
+    """KB lifecycle state per ADR-0008.
+
+    `active` participates in stale_knowledge freshness checks; the other
+    two are explicitly retired and skipped.
+    """
+
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    DEPRECATED = "deprecated"
 
 
 class TaskStatus(str, Enum):
@@ -33,14 +58,17 @@ class TaskStatus(str, Enum):
 
 
 class EdgeType(str, Enum):
-    """The seven typed edges resolved from artifact frontmatter.
+    """The eight typed edges resolved from artifact frontmatter.
 
-    All seven point at addressable graph nodes: five at artifact IDs
-    (TRIGGERED_BY, SUPERSEDES, RESOLVED_BY, IMPLEMENTED_BY_PLAN,
-    SPAWNS_ADRS) and two at task IDs (IMPLEMENTATION_TASKS,
-    SPAWNS_TASKS). The task-target edges previously held free-text
-    titles; M2 of the TASKS.md-as-graph-node work flipped them to
-    resolve against task records.
+    Six point at typed-artifact IDs (TRIGGERED_BY, SUPERSEDES,
+    RESOLVED_BY, IMPLEMENTED_BY_PLAN, SPAWNS_ADRS, EXPLAINS) and two at
+    task IDs (IMPLEMENTATION_TASKS, SPAWNS_TASKS). The task-target
+    edges previously held free-text titles; M2 of the TASKS.md-
+    as-graph-node work flipped them to resolve against task records.
+
+    EXPLAINS (ADR-0008) points from a KB article to the REQ/PLAN/ADR/SCN
+    it consolidates, so chain walks from any artifact can fan out the
+    knowledge that explains it.
     """
 
     TRIGGERED_BY = "triggered_by"
@@ -50,6 +78,7 @@ class EdgeType(str, Enum):
     SPAWNS_ADRS = "spawns_adrs"
     IMPLEMENTATION_TASKS = "implementation_tasks"
     SPAWNS_TASKS = "spawns_tasks"
+    EXPLAINS = "explains"  # ADR-0008: KB → typed artifact
 
 
 class Artifact(BaseModel):

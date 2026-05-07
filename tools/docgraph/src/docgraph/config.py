@@ -39,6 +39,11 @@ class CorpusConfig(BaseModel):
     name: str
     path: Path
     task_domains: dict[str, str] = Field(default_factory=dict)
+    # ADR-0009: per-corpus override for the KB freshness threshold. None
+    # means "use the default" (90 days). 0 disables the stale_knowledge
+    # check entirely (useful for archival corpora where KBs intentionally
+    # don't refresh).
+    knowledge_freshness_days: int | None = None
 
 
 def corpus_name_from_path(path: Path) -> str:
@@ -100,7 +105,23 @@ def _from_toml(toml_path: Path) -> dict[str, CorpusConfig]:
         _validate_corpus_name(name)
         path = body["path"]
         task_domains = _validate_task_domains(name, body.get("task_domains", {}))
-        out[name] = CorpusConfig(name=name, path=Path(path), task_domains=task_domains)
+        # ADR-0009: optional per-corpus knowledge freshness threshold.
+        kfd = body.get("knowledge_freshness_days")
+        if kfd is not None and not isinstance(kfd, int):
+            raise ValueError(
+                f"corpus {name!r}: knowledge_freshness_days must be an int (or absent), "
+                f"got {type(kfd).__name__}"
+            )
+        if isinstance(kfd, int) and kfd < 0:
+            raise ValueError(
+                f"corpus {name!r}: knowledge_freshness_days must be >= 0 (got {kfd})"
+            )
+        out[name] = CorpusConfig(
+            name=name,
+            path=Path(path),
+            task_domains=task_domains,
+            knowledge_freshness_days=kfd,
+        )
     return out
 
 
