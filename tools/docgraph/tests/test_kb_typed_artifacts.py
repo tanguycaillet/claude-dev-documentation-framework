@@ -54,6 +54,46 @@ def test_parser_kb_with_lowercase_suffix(tmp_path):
     assert a.type == ArtifactType.KB
 
 
+def test_parser_kb_accepts_reference_kind(tmp_path):
+    """ADR-0010: `reference` is the fifth valid KB kind alongside howto /
+    playbook / runbook / lineage. Added 2026-05-07 after Arbitrage
+    authoring surfaced the gap (3 of 6 KBs needed `reference` for
+    look-up material — config tables, schema docs, equipment specs)."""
+    from docgraph.parser import parse_directory
+    p = tmp_path / "KB-0008.md"
+    _write(p, {
+        "id": "KB-0008", "title": "Bound-removal config reference",
+        "kind": "reference", "status": "active",
+        "last_verified": "2026-05-07",
+    })
+    artifacts, errors = parse_directory(tmp_path)
+    assert len(artifacts) == 1
+    assert artifacts[0].type == ArtifactType.KB
+    # No "invalid kind" parse error — reference is in the enum.
+    assert not any("invalid `kind=" in e for e in errors)
+
+
+def test_parser_kb_rejects_unknown_kind(tmp_path):
+    """ADR-0010: kinds outside the 5-value taxonomy still surface as
+    parse errors. The article still indexes (per ADR-0008's soft
+    validation policy) so the typed graph isn't blocked by drift."""
+    from docgraph.parser import parse_directory
+    p = tmp_path / "KB-0009.md"
+    _write(p, {
+        "id": "KB-0009", "title": "Some doc",
+        "kind": "freeform-something",  # not in taxonomy
+        "status": "active",
+        "last_verified": "2026-05-07",
+    })
+    artifacts, errors = parse_directory(tmp_path)
+    # Article still indexes
+    assert len(artifacts) == 1
+    # But the unknown kind surfaces as a parse error
+    assert any(
+        "invalid `kind=" in e and "freeform-something" in e for e in errors
+    )
+
+
 def test_parser_skips_untyped_knowledge_file(tmp_path):
     """AC-6 backwards compat: a markdown file with frontmatter but no
     KB-NNNN id stays out of the typed graph."""

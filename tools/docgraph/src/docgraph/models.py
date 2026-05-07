@@ -16,15 +16,20 @@ class ArtifactType(str, Enum):
 
 
 class KBKind(str, Enum):
-    """Operational-knowledge taxonomy per ADR-0008. Required field on
-    every KB artifact's frontmatter; unknown values are parse errors so
-    authoring drift is visible.
+    """Operational-knowledge taxonomy per ADR-0008 (extended by ADR-0010).
+    Required field on every KB artifact's frontmatter; unknown values are
+    parse errors so authoring drift is visible.
     """
 
-    HOWTO = "howto"        # tool / interface usage
-    PLAYBOOK = "playbook"  # workflow / strategy end-to-end
-    RUNBOOK = "runbook"    # incident response / decision tree
-    LINEAGE = "lineage"    # supersession / changelog
+    HOWTO = "howto"            # tool / interface usage
+    PLAYBOOK = "playbook"      # workflow / strategy end-to-end
+    RUNBOOK = "runbook"        # incident response / decision tree
+    LINEAGE = "lineage"        # supersession / changelog
+    # ADR-0010: added 2026-05-07 after Arbitrage authoring (3 of 6 KBs
+    # used `reference` — look-up material that doesn't fit the four
+    # procedural kinds: configuration tables, glossary, schema docs,
+    # equipment specs, etc.).
+    REFERENCE = "reference"    # factual look-up material
 
 
 class KBStatus(str, Enum):
