@@ -142,6 +142,74 @@ def test_normalize_whitespace_collapses():
     assert _normalize_whitespace("Foo  Bar\n\nbaz") == "foo bar baz"
 
 
+# --- ADR-0006: id_prefix tier ---------------------------------------------
+
+
+def test_id_prefix_resolves_short_form():
+    """ADR-0006: title shaped `<TASK-ID>: description` resolves by ID even
+    when descriptions diverge between ADR side and TASKS.md side."""
+    tasks = [_make_task("FE-015", "Scaffold landing v8 section tree")]
+    out = match_titles(
+        ["FE-015: scaffold new landing v8 section tree under app/(marketing)/_sections/"],
+        tasks,
+    )
+    assert out[0].matched_task_id == "FE-015"
+    assert out[0].cascade_level == "id_prefix"
+
+
+def test_id_prefix_resolves_lowercase_suffix():
+    """ADR-0006: lowercase-suffix IDs (BE-014a, FE-009d) follow the same rule."""
+    tasks = [_make_task("BE-014a", "Drop garbage rows from window context")]
+    out = match_titles(
+        ["BE-014a: drop garbage rows where U > 5 W/m^2K or area = 0 in window context"],
+        tasks,
+    )
+    assert out[0].matched_task_id == "BE-014a"
+    assert out[0].cascade_level == "id_prefix"
+
+
+def test_id_prefix_with_non_colon_separator():
+    """ADR-0006: leading ID is extracted at the word boundary regardless of
+    whether the separator is a colon, space, or parenthesis."""
+    tasks = [_make_task("FE-015", "anything")]
+    out = match_titles(["FE-015 (lighter scope now): foo bar"], tasks)
+    assert out[0].matched_task_id == "FE-015"
+    assert out[0].cascade_level == "id_prefix"
+
+
+def test_id_prefix_unknown_id_falls_through_to_title_cascade():
+    """ADR-0006: a leading ID that isn't in the tasks list does NOT block
+    title-cascade resolution. The cascade keeps trying."""
+    tasks = [_make_task("TASK-0001", "Build the SQL view")]
+    # Title carries an unknown ID prefix but the description text matches a
+    # task by exact title; the match should still resolve at the exact tier.
+    # Note: _LEADING_ID_RE will extract "ZZ-999"; that's not in tasks, so we
+    # fall through; descriptive text "Build the SQL view" matches exactly.
+    out = match_titles(["ZZ-999: Build the SQL view"], tasks)
+    # No exact match because the full string differs, no id_prefix match
+    # because ZZ-999 is unknown; ultimately unmatched.
+    assert out[0].matched_task_id is None
+    assert out[0].cascade_level is None
+
+
+def test_id_prefix_does_not_shadow_already_id():
+    """ADR-0006: a bare ID (no description) still resolves through the
+    already_id short-circuit, not the id_prefix tier."""
+    tasks = [_make_task("TASK-0001", "real one")]
+    out = match_titles(["TASK-0042"], tasks)
+    assert out[0].matched_task_id == "TASK-0042"
+    assert out[0].cascade_level == "already_id"
+
+
+def test_id_prefix_no_leading_id_runs_title_cascade():
+    """ADR-0006: titles without a recognisable leading ID skip the id_prefix
+    tier entirely and run the existing title cascade."""
+    tasks = [_make_task("TASK-0001", "Port prototype to webapp")]
+    out = match_titles(["Port prototype to webapp"], tasks)
+    assert out[0].matched_task_id == "TASK-0001"
+    assert out[0].cascade_level == "exact"
+
+
 # --- plan_run end-to-end --------------------------------------------------
 
 

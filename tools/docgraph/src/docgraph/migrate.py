@@ -1,9 +1,14 @@
 """docgraph-migrate-adr-tasks: rewrite ADR.implementation_tasks from string-titles to task IDs.
 
-One-shot migration script per ADR-0004. Reads each ADR's frontmatter, matches
-its `implementation_tasks` titles against the TASKS.md task titles via a
-strict cascade (exact -> case-insensitive -> whitespace-normalized), and on
-`--apply` rewrites the frontmatter to the typed-id list format.
+One-shot migration script per ADR-0004 + ADR-0006. Reads each ADR's
+frontmatter, matches its `implementation_tasks` titles against the TASKS.md
+task titles via a strict cascade
+(already_id -> id_prefix -> exact -> case_insensitive -> whitespace_normalized),
+and on `--apply` rewrites the frontmatter to the typed-id list format.
+
+The `id_prefix` tier (ADR-0006) handles corpora authored with the
+`<TASK-ID>: <description>` shape, where ADR-side and TASKS.md-side
+descriptions diverge but both carry the same leading ID.
 
 Two-phase semantics:
 - Plan phase always runs: collects ready / no-op / blocked per ADR.
@@ -42,6 +47,12 @@ from docgraph.parser import parse_directory, parse_tasks_file
 # Same regex as ADR-0001's ID rule. Used here to detect already-migrated
 # ADRs (every implementation_tasks entry is already a typed ID).
 _TASK_ID_RE = re.compile(r"^[A-Z]+(?:-[A-Z0-9]+)+[a-z]?$")
+
+# ADR-0006: extracts a leading task-ID prefix from a free-text title shaped
+# `<TASK-ID>: <description>` or `<TASK-ID> <anything>`. Same regex shape as
+# _TASK_ID_RE but unanchored at the right end with a word-boundary, so the
+# trailing description is captured separately. Group 1 is the bare ID.
+_LEADING_ID_RE = re.compile(r"^([A-Z]+(?:-[A-Z0-9]+)+[a-z]?)\b")
 
 
 @dataclass
@@ -104,20 +115,25 @@ def match_titles(titles: list[str], tasks: list[Task]) -> list[TitleMatch]:
     """Resolve each title against the tasks list via the strict cascade.
 
     Cascade order:
-      1. Exact match on `task.title`
-      2. Case-insensitive exact match
-      3. Whitespace-normalized (collapsed + trimmed + lowercased) match
+      0.  already_id            (the title IS a typed ID; short-circuit)
+      0.5 id_prefix             (title starts with `<TASK-ID>` and that
+                                 ID exists in tasks; ADR-0006)
+      1.  exact                 (task.title == title)
+      2.  case_insensitive      (case-folded equality)
+      3.  whitespace_normalized (whitespace-collapsed + case-folded equality)
 
     No fuzzy matching. False positives at any level are quieter than
     unmatched and harder to detect, so the cascade caps at level 3.
 
-    Tie-breaking: at the FIRST level where any match is found, if multiple
-    tasks tie, earliest-by-line-number wins; the result is marked
-    `ambiguous=True` so the caller can warn.
+    Tie-breaking: at the FIRST title-cascade level where matches are
+    found (levels 1-3), if multiple tasks tie, earliest-by-line-number
+    wins; the result is marked `ambiguous=True` so the caller can warn.
+    The id_prefix tier (level 0.5) is unique-by-construction (task IDs
+    are disjoint per build_graph), so it never produces ambiguous hits.
     """
     out: list[TitleMatch] = []
     for title in titles:
-        # Already a typed ID? Short-circuit through, treat as "matched at level 0".
+        # Tier 0: already a typed ID? Short-circuit.
         if isinstance(title, str) and _TASK_ID_RE.match(title):
             out.append(
                 TitleMatch(
@@ -127,6 +143,23 @@ def match_titles(titles: list[str], tasks: list[Task]) -> list[TitleMatch]:
                 )
             )
             continue
+
+        # Tier 0.5: ADR-0006 — title shaped `<TASK-ID>: <description>` or
+        # `<TASK-ID> <anything>`. Trust the ID; description is decorative.
+        prefix_match = _LEADING_ID_RE.match(title) if isinstance(title, str) else None
+        if prefix_match:
+            candidate_id = prefix_match.group(1)
+            id_hits = [t for t in tasks if t.id == candidate_id]
+            if id_hits:
+                # IDs are unique within a corpus; at most one hit.
+                out.append(
+                    TitleMatch(
+                        title=title,
+                        matched_task_id=id_hits[0].id,
+                        cascade_level="id_prefix",
+                    )
+                )
+                continue
 
         # Level 1: exact match
         exact_hits = [t for t in tasks if t.title == title]
@@ -297,6 +330,9 @@ def _print_plan(plans: list[ADRPlan], verbose: bool, mode: str) -> None:
                 if m.matched_task_id is None:
                     print(f"  {m.title!r}  ->  ???  UNMATCHED")
                 else:
+                    # Annotate non-default cascade levels (id_prefix /
+                    # case_insensitive / whitespace_normalized). exact and
+                    # already_id are the silent defaults.
                     arrow_note = f"  ({m.cascade_level})" if m.cascade_level not in (None, "exact", "already_id") else ""
                     ambig = "  AMBIGUOUS-TIE" if m.ambiguous else ""
                     print(f"  {m.title!r}  ->  {m.matched_task_id}{arrow_note}{ambig}")
