@@ -149,13 +149,23 @@ def build_graph(
 
 
 class ChainStep(BaseModel):
-    """One step in a chain walk: artifact reached, depth, edge label."""
+    """One step in a chain walk: artifact OR task reached, depth, edge label.
+
+    `node_kind="artifact"` (default) for REQ/PLAN/ADR/SCN; `node_kind="task"`
+    for TASKS.md rows reached via implementation_tasks / spawns_tasks edges
+    (ADR-0005). The id field is `artifact_id` for both, kept as the field
+    name for backwards compatibility with pre-task-fanout callers; the
+    discriminator is `node_kind`. Task IDs and artifact IDs are guaranteed
+    disjoint by build_graph's collision check, so the ID itself is
+    unambiguous.
+    """
 
     depth: int
     artifact_id: str
     title: str | None = None
     status: str | None = None
     via_edge: str | None = None
+    node_kind: str = "artifact"  # ADR-0005: "artifact" | "task"
 
 
 def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
@@ -166,6 +176,11 @@ def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
       PLAN ← implemented_by.plan  (inverse, find the REQ that points here)
       SCN  → resolved_by          (forward: ADR)
       REQ  → implemented_by.plan  (forward: PLAN)
+
+    ADR-0005: every ADR or PLAN reached during the walk also fans out its
+    `implementation_tasks` / `spawns_tasks` children as task steps at
+    `parent_depth + 1`. Tasks are leaves (no further outgoing edges); the
+    fan-out terminates immediately.
 
     Cycles are broken via a visited set. Returns an empty list when
     `start_id` isn't in the graph.
@@ -181,6 +196,7 @@ def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
             title=start.title,
             status=start.status,
             via_edge=None,
+            node_kind="artifact",
         )
     ]
     visited = {start.id}
@@ -201,13 +217,46 @@ def walk_chain(graph: Graph, start_id: str) -> list[ChainStep]:
                 title=next_artifact.title,
                 status=next_artifact.status,
                 via_edge=label,
+                node_kind="artifact",
             )
         )
         visited.add(next_id)
         current = next_artifact
         depth += 1
 
-    return chain
+    # ADR-0005: fan-out task descendants for every ADR/PLAN step. Walk in
+    # original order, append tasks immediately after their parent. Implemented
+    # as a rebuild rather than in-place mutation so depth stays monotonic.
+    rebuilt: list[ChainStep] = []
+    for step in chain:
+        rebuilt.append(step)
+        if step.node_kind != "artifact":
+            continue
+        parent = graph.get(step.artifact_id)
+        if parent is None or parent.type not in (ArtifactType.ADR, ArtifactType.PLAN):
+            continue
+        edge_type, label = (
+            (EdgeType.IMPLEMENTATION_TASKS, "implementation_tasks →")
+            if parent.type == ArtifactType.ADR
+            else (EdgeType.SPAWNS_TASKS, "spawns_tasks →")
+        )
+        for edge in graph.edges:
+            if edge.source_id != parent.id or edge.edge_type != edge_type:
+                continue
+            task = graph.get_task(edge.target)
+            if task is None:
+                continue
+            rebuilt.append(
+                ChainStep(
+                    depth=step.depth + 1,
+                    artifact_id=task.id,
+                    title=task.title,
+                    status=task.status.value,
+                    via_edge=label,
+                    node_kind="task",
+                )
+            )
+    return rebuilt
 
 
 def _next_in_chain(graph: Graph, current: Artifact) -> tuple[str | None, str | None]:
